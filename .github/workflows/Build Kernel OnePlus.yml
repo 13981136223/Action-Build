@@ -1228,10 +1228,13 @@ jobs:
           PATCH_EXPR: ${{ github.event.inputs.HMBIRD_PATCH }}
         run: |
           set -e
-          cd kernel_workspace/kernel_platform
+          # sched_ext 属 modules_and_devicetree 仓库，manifest 里 path 是 "./"，
+          # 不在 kernel_platform 下，所以从 kernel_workspace 整层找。
+          cd kernel_workspace
           SRC=$(find . -type f -path '*vendor/oplus/kernel/cpu/sched_ext/main.c' | head -n 1)
           if [ -z "$SRC" ]; then
             echo "::warning::未找到 vendor/oplus/kernel/cpu/sched_ext/main.c，跳过改码"
+            find . -maxdepth 3 -type d -name 'sched_ext' 2>/dev/null | head -5
             exit 0
           fi
           echo "改码目标: $SRC"
