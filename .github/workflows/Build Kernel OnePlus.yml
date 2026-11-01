@@ -178,6 +178,11 @@ on:
         description: "是否停用此次缓存？//Disable caching for this build?"
         required: true
         default: false
+      HMBIRD_PATCH:
+        type: string
+        description: "改 hmbird 调度源码的 sed 表达式（留空=不改）//sed -E expression applied to vendor/oplus/kernel/cpu/sched_ext/main.c"
+        required: false
+        default: ""
 
 jobs:
   build:
@@ -1217,6 +1222,25 @@ jobs:
             grep -nE '\(char \*\)(strstr|strchr)' "$f" || echo "✅ 匹配失败，当前云控ubuntu版本无需此操作"
           fi
 
+      - name: Patch hmbird sched_ext source
+        if: ${{ github.event.inputs.HMBIRD_PATCH != '' }}
+        env:
+          PATCH_EXPR: ${{ github.event.inputs.HMBIRD_PATCH }}
+        run: |
+          set -e
+          cd kernel_workspace/kernel_platform
+          SRC=$(find . -type f -path '*vendor/oplus/kernel/cpu/sched_ext/main.c' | head -n 1)
+          if [ -z "$SRC" ]; then
+            echo "::warning::未找到 vendor/oplus/kernel/cpu/sched_ext/main.c，跳过改码"
+            exit 0
+          fi
+          echo "改码目标: $SRC"
+          cp "$SRC" "$SRC.orig"
+          # 经 env 传入而非直接插值，避免 workflow 表达式注入
+          sed -i -E "$PATCH_EXPR" "$SRC"
+          echo "=== 实际改动 ==="
+          diff -u "$SRC.orig" "$SRC" || true
+
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
@@ -1543,6 +1567,30 @@ jobs:
         with:
           name: AnyKernel3_SukiSUUltra_${{ env.KSUVER }}_${{ steps.extract_info.outputs.value }}(${{ env.CKERNEL_VERSION }})${{ steps.suffix.outputs.value }}
           path: ./AnyKernel3/*
+
+      - name: Collect hmbird sched_ext module
+        id: sched_ext
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          KO=$(find kernel_workspace/kernel_platform/out -type f -name 'oplus_bsp_sched_ext.ko' 2>/dev/null | head -n 1)
+          if [ -z "$KO" ]; then
+            echo "::warning::构建产物中未找到 oplus_bsp_sched_ext.ko —— 该 DDK 模块未纳入本次构建范围"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "找到调度模块: $KO"
+          mkdir -p sched-ext-module
+          cp "$KO" sched-ext-module/oplus_bsp_sched_ext.ko
+          ls -la sched-ext-module
+          modinfo sched-ext-module/oplus_bsp_sched_ext.ko 2>/dev/null | grep -E '^(vermagic|name|version|depends)' || true
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload hmbird sched_ext module
+        if: steps.sched_ext.outputs.found == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: HMBIRD-sched_ext-${{ steps.extract_info.outputs.value }}
+          path: ./sched-ext-module/*
 
       - name: Extract and Process ZRAM Module
         if: startsWith(github.event.inputs.ZRAM, '1/')
