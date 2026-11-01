@@ -1575,7 +1575,7 @@ jobs:
         id: sched_ext
         run: |
           cd "$GITHUB_WORKSPACE"
-          KO=$(find kernel_workspace/kernel_platform/out -type f -name 'oplus_bsp_sched_ext.ko' 2>/dev/null | head -n 1)
+          KO=$(find kernel_workspace -type f -name 'oplus_bsp_sched_ext.ko' 2>/dev/null | head -n 1)
           if [ -z "$KO" ]; then
             echo "::warning::构建产物中未找到 oplus_bsp_sched_ext.ko —— 该 DDK 模块未纳入本次构建范围"
             echo "found=false" >> "$GITHUB_OUTPUT"
@@ -1599,7 +1599,9 @@ jobs:
         if: always()
         run: |
           cd "$GITHUB_WORKSPACE"
-          OUT=kernel_workspace/kernel_platform/out
+          # 真实产物根目录是 kernel_platform/common/out（由 zram.ko 的实际路径证实），
+          # 只查 kernel_platform/out 会误判为「未构建」，所以整树扫。
+          OUT=kernel_workspace
           {
             echo "=== out 下所有 .ko（构建范围真实清单）==="
             find "$OUT" -type f -name '*.ko' 2>/dev/null | sed "s|$OUT/||" | sort
