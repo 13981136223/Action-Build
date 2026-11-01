@@ -1595,6 +1595,33 @@ jobs:
           name: HMBIRD-sched_ext-${{ steps.extract_info.outputs.value }}
           path: ./sched-ext-module/*
 
+      - name: Inventory built kernel modules
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          OUT=kernel_workspace/kernel_platform/out
+          {
+            echo "=== out 下所有 .ko（构建范围真实清单）==="
+            find "$OUT" -type f -name '*.ko' 2>/dev/null | sed "s|$OUT/||" | sort
+            echo
+            echo "=== 计数 ==="
+            find "$OUT" -type f -name '*.ko' 2>/dev/null | wc -l
+            echo
+            echo "=== 关键调度/性能模块是否在产物里 ==="
+            for m in oplus_bsp_sched_ext sa_balance sa_common frame_boost oplus_game \
+                    game_opt oplus_overload oplus_slc zram waker_identify; do
+              hit=$(find "$OUT" -type f -name "*${m}*.ko" 2>/dev/null | head -1)
+              printf "%-24s %s\n" "$m" "${hit:-未构建}"
+            done
+          } | tee module-inventory.txt
+
+      - name: Upload module inventory
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: module-inventory-${{ steps.extract_info.outputs.value }}
+          path: ./module-inventory.txt
+
       - name: Extract and Process ZRAM Module
         if: startsWith(github.event.inputs.ZRAM, '1/')
         id: zram_find
