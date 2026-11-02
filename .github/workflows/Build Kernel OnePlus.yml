@@ -1130,9 +1130,13 @@ jobs:
             set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-            # v2.3.0 共 11 个 KSU_SUSFS_* 开关，前两轮我们只开了 10 个，漏的就是下面这条：
-            # 后果实测过 —— 交付 Image 里 susfs_* 符号从 95 掉到 84，
-            # susfs_set_priority_uid_filter / susfs_parse_priority_app_strings 直接没编进去。
+            # v2.3.0 一共定义了 11 个 KSU_SUSFS_* 开关，但这条多出来的
+            # KSU_SUSFS_PRIORITY_UID_FILTER 只有 tiann/KernelSU 那条线声明（在 SUSFS 的
+            # 10_enable_susfs_for_ksu.patch 里），SukiSU 的 kernel/Kconfig 里根本没有它
+            # （builtin 分支实测只声明 10 个，含主开关）。Kconfig 不认识的名字，
+            # olddefconfig 会静默丢掉 —— 所以照抄 SUSFS 文档硬开 11 个是自欺欺人。
+            # 这里仍然写下去（哪天上游加了这个名字就自动生效），但断言改成
+            # 「按上游 Kconfig 实际声明的集合来核」，并在产物闸门里点名它不可能出现。
             set_config "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y"
           else
             set_config "CONFIG_KSU_SUSFS=n"
@@ -1148,11 +1152,25 @@ jobs:
             [ -n "$SUSFS_VER" ] || { echo "::error::susfs.h 里没有 SUSFS_VERSION"; exit 1; }
             echo "SUSFS_VERSION=$SUSFS_VER  来源分支: gki-$KMI"
             MISSING=""
-            for K in CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
-              grep -qF "$K=y" "$CONFIG_FILE" || MISSING="$MISSING $K"
+            # 断言集合不再手写：从真正进树的 KSU 源码 Kconfig 里现取声明过的开关名。
+            # 之前这里硬写 11 个还打印「11/11 全部 =y」，而它查的是 defconfig 文本 ——
+            # 上游没声明的名字写进去也会被 Kconfig 丢掉，那条绿灯是空的。
+            KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -path "*/KernelSU/kernel/Kconfig" 2>/dev/null | head -n 1)
+            [ -n "$KC" ] || KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -name Kconfig -path "*KernelSU*" 2>/dev/null | head -n 1)
+            [ -n "$KC" ] || { echo "::error::找不到 KernelSU/SukiSU 的 Kconfig，无法核对 SUSFS 开关面"; exit 1; }
+            echo "Kconfig 来源: $KC"
+            DECL=$(grep -oE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KC" | sed 's/^config //' | sort -u)
+            ND=$(printf '%s\n' "$DECL" | grep -c '')
+            echo "上游声明的 SUSFS 开关: $ND 个 -> $(echo "$DECL" | tr '\n' ' ')"
+            [ "$ND" -ge 9 ] || { echo "::error::只声明了 $ND 个 SUSFS 开关，比已知最少值还少，先查上游是否改了名"; exit 1; }
+            for K in $DECL; do
+              grep -qF "CONFIG_$K=y" "$CONFIG_FILE" || MISSING="$MISSING CONFIG_$K"
             done
             [ -z "$MISSING" ] || { echo "::error::以下 SUSFS 开关没打开：$MISSING"; exit 1; }
-            echo "11/11 SUSFS 开关全部 =y"
+            echo "✅ 上游声明的 $ND 个 SUSFS 开关在 defconfig 里全部 =y"
+            printf '%s\n' "$DECL" | grep -qx 'KSU_SUSFS_PRIORITY_UID_FILTER' \
+              && echo "  这条线支持 PRIORITY_UID_FILTER（隐藏 getpriority/ioprio 探测）" \
+              || echo "  注：这条线的上游 Kconfig 不声明 KSU_SUSFS_PRIORITY_UID_FILTER，优先级 UID 过滤不可能编进产物（只有 tiann/KernelSU 有），不算回归"
             echo "SUSFS_VER=$SUSFS_VER" >> "$GITHUB_ENV"
           fi
 
@@ -1798,21 +1816,75 @@ jobs:
         run: |
           # 配置里写了 =y 不代表真编进内核（可能被 select 掉、可能上游改了名字），
           # 所以直接查产物里的符号名。
+          # 期望清单改成两处结合：
+          #  1) 硬断：只断「实机验证过、隐藏链路真的会调用」的入口 —— 上一轮这 9 个全在，
+          #     所以断言不是凭空加的；
+          #  2) 全覆盖报告：从真正拷进树里的 fs/susfs.c 现取所有非 static 的 susfs_* 函数，
+          #     并解析每个函数外层的 #ifdef CONFIG_KSU_SUSFS_*，只把「上游 Kconfig 声明过的」
+          #     算作应有项。这样既不用手写清单，也不会再把上游压根没声明的开关
+          #     （KSU_SUSFS_PRIORITY_UID_FILTER 只有 tiann/KernelSU 有）当成回归。
           set -e
           cd "$GITHUB_WORKSPACE"
           IMG=$(find . kernel_workspace -maxdepth 4 -type f -name Image 2>/dev/null | head -n 1)
           [ -n "$IMG" ] || { echo "::error::找不到 Image 产物"; exit 1; }
-          echo "检查 $IMG 里的 SUSFS 符号面（版本 $SUSFS_VER）"
-          REQ="susfs_init susfs_add_sus_path susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_hide_sus_mnts_for_non_su_procs susfs_enable_log"
-          REQ="$REQ susfs_set_priority_uid_filter susfs_parse_priority_app_strings"
-          MISS=""
-          for S in $REQ; do
-            grep -aq "$S" "$IMG" || MISS="$MISS $S"
+          SRC=$(find . kernel_workspace -maxdepth 5 -type f -path "*/common/fs/susfs.c" 2>/dev/null | head -n 1)
+          [ -n "$SRC" ] || { echo "::error::找不到拷进树里的 fs/susfs.c，无法核对符号面"; exit 1; }
+          KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -path "*/KernelSU/kernel/Kconfig" 2>/dev/null | head -n 1)
+          [ -n "$KC" ] || KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -name Kconfig -path "*KernelSU*" 2>/dev/null | head -n 1)
+          [ -n "$KC" ] || { echo "::error::找不到 KernelSU/SukiSU 的 Kconfig"; exit 1; }
+          echo "检查 $IMG 里的 SUSFS 符号面（版本 $SUSFS_VER，源码 $SRC，声明面 $KC）"
+          grep -aoE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KC" | sed 's/^config //' | sort -u > decl.txt
+          # 函数名 + 它外层所有 KSU_SUSFS 守卫（可能嵌套，全部要求声明过才算应有）
+          # 注意栈里要收*所有*#if 系列（含 LINUX_VERSION_CODE 这类），否则它们的
+          # #endif 会把不属于它的 SUSFS 守卫弹掉，整个判定就错位了。
+          awk '
+            /^#if/ {
+              g = ""
+              if (match($0, /CONFIG_KSU_SUSFS_[A-Z0-9_]+/)) { g = substr($0, RSTART + 7, RLENGTH - 7) }
+              stack[++d] = g
+              next
+            }
+            /^(#else|#elif)/ { next }
+            /^#endif/ { if (d > 0) { delete stack[d]; d-- } next }
+            /^[^ \t#].*\(/ {
+              if ($0 ~ /^static/) next
+              if (!match($0, /[A-Za-z_][A-Za-z0-9_]*[ \t]*\(/)) next
+              s = substr($0, RSTART, RLENGTH); gsub(/[ \t(]/, "", s)
+              if (s !~ /^susfs_/) next
+              guards = ""
+              for (i = 1; i <= d; i++) if (stack[i] != "") guards = guards stack[i] " "
+              print s "\t" guards
+            }' "$SRC" > sym_guards.txt
+          [ -s sym_guards.txt ] || { echo "::error::从 susfs.c 里一个非 static 函数都没提到，核对器自己是瞎的"; exit 1; }
+          : > want.txt; : > skip.txt
+          while IFS=$'\t' read -r NAME GUARDS; do
+            UNSAT=""
+            for G in $GUARDS; do grep -qx "$G" decl.txt || UNSAT="$UNSAT $G"; done
+            if [ -n "$UNSAT" ]; then printf '%s\t%s\n' "$NAME" "$UNSAT" >> skip.txt
+            else printf '%s\n' "$NAME" >> want.txt; fi
+          done < sym_guards.txt
+          sort -u -o want.txt want.txt; sort -u -o skip.txt skip.txt
+          grep -ao "susfs_[a-z0-9_]*" "$IMG" | sort -u > have_syms.txt
+          echo "源码非 static 的 susfs_* 函数: $(($(wc -l < want.txt) + $(wc -l < skip.txt))) 个（应有 $(wc -l < want.txt)，上游不支持 $(wc -l < skip.txt)）"
+          if [ -s skip.txt ]; then
+            echo "  上游 Kconfig 没声明这些守卫，函数不可能出现（不算回归）："
+            sed 's/^/    /' skip.txt
+          fi
+          MISS=$(comm -23 want.txt have_syms.txt | tr '\n' ' ')
+          if [ -n "$MISS" ]; then echo "::warning::这些应有函数没在产物里查到（多为 LTO 内联/改名）：$MISS"; fi
+          # 硬断：隐藏链路真正调用的入口，少一个就是回归，直接红。
+          # 名字一律取自主动源码面（上一版这里手写清单里有个名字压根不是函数名，
+          # 用的是子串匹配，结果既是假绿灯也是假红灯）。
+          HARD="susfs_init susfs_add_sus_path susfs_add_sus_path_loop susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_set_hide_sus_mnts_for_non_su_procs susfs_enable_log susfs_get_enabled_features"
+          HM=""
+          for S in $HARD; do
+            grep -qx "$S" want.txt || { echo "::error::硬断清单过期：$S 不在本次源码的应有函数里，请核对上游改名"; exit 1; }
+            grep -qx "$S" have_syms.txt || HM="$HM $S"
           done
-          CNT=$(grep -ao "susfs_[a-z0-9_]*" "$IMG" | sort -u | wc -l)
-          echo "Image 里去重后的 susfs_* 符号数: $CNT"
-          [ -z "$MISS" ] || { echo "::error::产物里缺少这些 SUSFS 符号，说明特性没编进去：$MISS"; exit 1; }
-          echo "✅ 全部必需 SUSFS 符号都在产物里（$CNT 个 susfs_* 符号）"
+          [ -z "$HM" ] || { echo "::error::隐藏链路关键符号缺失：$HM"; exit 1; }
+          echo "✅ 关键符号 $(echo $HARD | wc -w)/$(echo $HARD | wc -w) 都在产物里；产物里 susfs_* 名字共 $(wc -l < have_syms.txt) 个"
+          if [ -z "$MISS" ]; then echo "✅ 上游声明的全部 SUSFS 函数都编进了产物"; fi
+          rm -f decl.txt sym_guards.txt want.txt skip.txt have_syms.txt
 
       - name: Add flash-time guards to AnyKernel3
         run: |
@@ -1912,10 +1984,25 @@ jobs:
       - name: Harden the bundled susfs module
         if: always()
         run: |
-          # 随包的 ksu_module_susfs 里 config.sh 才是隐藏总开关，而它的默认值有几项是关的：
-          #   hide_loops=0 hide_vendor_sepolicy=0 hide_compat_matrix=0 hide_cusrom=0
-          #   kernel_version='default' kernel_build='default' susfs_log=1
-          # 这里在打包前就把它们改成激进值，模块装完即生效 —— 不用额外模块、不赌启动顺序。
+          # 随包的 ksu_module_susfs 里 config.sh 才是隐藏总开关。这里不猜默认值，
+          # 全部按模块源码（v1.5.2+_R28）里真实存在的键来改，并且每个键改之前先确认
+          # 它还在文件里 —— 上游哪天改名，这一步会直接红，而不是安静地少一个开关。
+          #
+          # 开（都是 sus_mount/sus_path 系，SukiSU 声明过对应 CONFIG 的）：
+          #   hide_loops hide_vendor_sepolicy hide_compat_matrix hide_cusrom
+          #   spoof_cmdline（把 androidboot.verifiedbootstate=orange 改成 green —— 解锁/boot
+          #     状态是风控第一眼看的东西，纯用户态 bind mount，不依赖额外内核开关）
+          #   hide_sus_mnts_for_all_or_non_su_procs=1（对所有进程隐藏 sus 挂载）
+          #   force_hide_lsposed / auto_try_umount / skip_legit_mounts
+          #     （后两条是「卸掉的模块别留挂载」+「别误卸正经挂载」；内核没有
+          #      CONFIG_KSU_SUSFS_TRY_UMOUNT 时模块自己会跳过/复位，不会坏事）
+          # 关：
+          #   susfs_log=0                        少一处日志指纹
+          #   spoof_uname=0                      我们的内核串本来就钉成原厂值，伪造成
+          #                                      另一个值只会造出 osrelease 与 banner 不一致的新破绽
+          #   avc_log_spoofing=0                 SukiSU 的 Kconfig 没有这个开关，开了也是空转
+          #   hide_gapps / hide_revanced=0       国行机没这些包，纯属多余挂载操作
+          #   umount_for_zygote_iso_service=0 emulate_vold_app_data=0  收益不明、动的是别人的挂载
           set -e
           cd "$GITHUB_WORKSPACE"
           M=$(find . -maxdepth 3 -type f -name 'ksu_module_susfs_*.zip' | head -n 1)
@@ -1925,28 +2012,54 @@ jobs:
           unzip -q "$M" -d susmod
           C=$(find susmod -maxdepth 2 -type f -name config.sh | head -n 1)
           [ -n "$C" ] || { echo "::error::模块里没有 config.sh，无法核对隐藏开关"; exit 1; }
-          echo "=== 改前 ==="; grep -E '^(hide_loops|hide_vendor_sepolicy|hide_compat_matrix|hide_cusrom|susfs_log|kernel_version|kernel_build)=' "$C"
+          PAIRS="hide_loops=1 hide_vendor_sepolicy=1 hide_compat_matrix=1 hide_cusrom=1 spoof_cmdline=1 hide_sus_mnts_for_all_or_non_su_procs=1 force_hide_lsposed=1 auto_try_umount=1 skip_legit_mounts=1 susfs_log=0 spoof_uname=0 avc_log_spoofing=0 hide_gapps=0 hide_revanced=0 umount_for_zygote_iso_service=0 emulate_vold_app_data=0"
+          echo "=== 改前 ==="; grep -E '^[a-z_0-9]+=' "$C"
+          for P in $PAIRS; do
+            K=${P%%=*}; V=${P##*=}
+            grep -qE "^$K=" "$C" || { echo "::error::模块 config.sh 里没有键 $K —— 上游改了开关名，本步隐藏清单要重新核对"; exit 1; }
+            sed -i -E "s|^$K=.*|$K=$V|" "$C"
+          done
           REL=$(grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | head -1 | cut -d' ' -f3)
-          [ -n "$REL" ] || { echo "::error::读不到包内 Image 的版本串，伪装值没法填"; exit 1; }
-          BLD="#1 SMP PREEMPT ${BUILD_TIME:-$(date -u '+%a %b %e %H:%M:%S UTC %Y')}"
-          for K in hide_loops hide_vendor_sepolicy hide_compat_matrix hide_cusrom; do
-            sed -i -E "s|^$K=.*|$K=1|" "$C"
+          [ -n "$REL" ] || { echo "::error::读不到包内 Image 的版本串"; exit 1; }
+          # uname -v 直接从这个 Image 的 banner 里取（不再手写 "#1 SMP PREEMPT $BUILD_TIME"）：
+          # 手写值和真实值一旦不一致， spoof 反而制造破绽。取不到就退回 default 并保持
+          # spoof_uname=0，这样两个值都是惰性文本，不可能自相矛盾。
+          BANNER=$(grep -aoE 'Linux version [[:print:]]{10,240}' AnyKernel3/Image 2>/dev/null | head -1)
+          BLD=$(printf '%s' "$BANNER" | sed -nE 's/.*(#[0-9]+ .*)/\1/p')
+          # banner 尾部不该有架构名（那是 uname -m 的活），万一提取多吃了就剥掉；
+          # 剥完仍不是一个「#N … 四位年份」的形状就整对退回 default，
+          # 绝不留下半截假值 —— 伪装的 uname -v 与真实值不一致本身就是新破绽。
+          BLD=$(printf '%s' "$BLD" | sed -E 's/ (aarch64|arm64)[[:print:]]*$//')
+          printf '%s' "$BLD" | grep -qE '^#[0-9]+ .*[0-9]{4}$' || BLD=""
+          if [ -n "$BLD" ]; then
+            sed -i -E "s|^kernel_version=.*|kernel_version='$REL'|; s|^kernel_build=.*|kernel_build='$BLD'|" "$C"
+            echo "伪装值（与真实值逐字一致，spoof_uname 仍为 0）: kernel_version=$REL"
+            echo "                                kernel_build=$BLD"
+          else
+            sed -i -E "s|^kernel_version=.*|kernel_version='default'|; s|^kernel_build=.*|kernel_build='default'|" "$C"
+            echo "::warning::从 Image banner 里没提出 uname -v，伪装值留 default（spoof_uname=0，惰性）"
+          fi
+          echo "=== 改后 ==="; grep -E '^[a-z_0-9]+=' "$C"
+          for P in $PAIRS; do
+            K=${P%%=*}; V=${P##*=}
+            grep -qE "^$K=$V\$" "$C" || { echo "::error::$K 没写成 $V，隐藏开关未生效"; exit 1; }
           done
-          sed -i -E 's|^susfs_log=.*|susfs_log=0|' "$C"
-          sed -i -E "s|^kernel_version=.*|kernel_version='$REL'|" "$C"
-          sed -i -E "s|^kernel_build=.*|kernel_build='$BLD'|" "$C"
-          echo "=== 改后 ==="; grep -E '^(hide_loops|hide_vendor_sepolicy|hide_compat_matrix|hide_cusrom|susfs_log|kernel_version|kernel_build)=' "$C"
-          for K in hide_loops hide_vendor_sepolicy hide_compat_matrix hide_cusrom; do
-            grep -qE "^$K=1$" "$C" || { echo "::error::$K 没改成 1，隐藏开关未生效"; exit 1; }
-          done
-          grep -qE "^kernel_version='$REL'$" "$C" || { echo "::error::kernel_version 伪装值没写进去"; exit 1; }
-          echo "kernel_version=$REL  kernel_build=$BLD"
           cd susmod
           python3 -c "import zipfile,os;z=zipfile.ZipFile(os.path.abspath('../mod.zip'),'w',zipfile.ZIP_DEFLATED);[z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f))) for r,d,fs_ in os.walk('.') for f in fs_];z.close()"
           cd .. && mv -f mod.zip "$M"
-          python3 -c "import zipfile,sys;a=zipfile.ZipFile('$M'.replace(chr(92),'/'));n=[x for x in a.namelist() if x.endswith('config.sh')][0];t=a.read(n).decode('utf-8','replace');sys.exit(0 if 'hide_loops=1' in t and 'hide_cusrom=1' in t else 1)" \
-            || { echo "::error::重打包后的模块里隐藏开关不在"; exit 1; }
-          echo "✅ 随包 susfs 模块已按极致隐藏配置重打包"
+          python3 -c "
+          import zipfile,sys
+          a=zipfile.ZipFile(r'''$M'''.replace(chr(92),'/'))
+          n=[x for x in a.namelist() if x.endswith('config.sh')][0]
+          t=a.read(n).decode('utf-8','replace')
+          need=['hide_loops=1','hide_cusrom=1','hide_vendor_sepolicy=1','hide_compat_matrix=1','spoof_cmdline=1','susfs_log=0','spoof_uname=0']
+          bad=[k for k in need if k not in t]
+          if bad:
+              print('重打包后缺键:', ' '.join(bad))
+              sys.exit(1)
+          sys.exit(0)" \
+            || { echo "::error::重打包后的模块里隐藏开关不全"; exit 1; }
+          echo "✅ 随包 susfs 模块已按极致隐藏配置重打包（16 个开关全部回读校验）"
 
       - name: Bundle and auto-install modules at flash time
         if: always()
