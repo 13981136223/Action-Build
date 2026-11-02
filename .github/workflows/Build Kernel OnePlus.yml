@@ -1646,7 +1646,7 @@ jobs:
             exit 0
           fi
           echo "=== 使用原厂 game_opt（vermagic 6.1.57，OEM 构建）等模块的 CRC 需求 ==="
-          node Action-Build/scripts/crc_compare.js Action-Build/scripts/crc_stock.json $(tr '\n' ' ' < symvers.list) \
+          node kernel_workspace/Action-Build/scripts/crc_compare.js kernel_workspace/Action-Build/scripts/crc_stock.json $(tr '\n' ' ' < symvers.list) \
             | tee crc-verdict.txt
           echo "--- VERDICT 行 ---"
           grep -a 'VERDICT' crc-verdict.txt || echo "没有输出判定行，视为未证"
@@ -1751,7 +1751,7 @@ jobs:
             KO=$(find kernel_workspace -type f -name "${M}.ko" 2>/dev/null | grep -v '/unstripped/' | head -n 1)
             [ -z "$KO" ] && { echo "$M: 本轮没产出（FAST 档不编厂商模块）"; continue; }
             echo "===== $M  <- $KO ====="
-            node Action-Build/scripts/read_mod_value.js "$KO" || echo "  读取失败: $M"
+            node kernel_workspace/Action-Build/scripts/read_mod_value.js "$KO" || echo "  读取失败: $M"
           done
 
 
