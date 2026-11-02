@@ -1085,7 +1085,7 @@ jobs:
             echo "=== SUSFS 版本与开关核对 ==="
             SH=$(find kernel_workspace -type f -path "*susfs4ksu/kernel_patches/include/linux/susfs.h" 2>/dev/null | head -n 1)
             [ -n "$SH" ] || { echo "::error::找不到 susfs.h，无法确认 SUSFS 版本，拒绝继续"; exit 1; }
-            SUSFS_VER=$(grep -m1 -oE 'define SUSFS_VERSION "[^"]+"' "$SH" | sed -E 's/.*"([^"]+)".*//')
+            SUSFS_VER=$(grep -m1 -oE 'define SUSFS_VERSION "[^"]+"' "$SH" | cut -d'"' -f2)
             [ -n "$SUSFS_VER" ] || { echo "::error::susfs.h 里没有 SUSFS_VERSION"; exit 1; }
             echo "SUSFS_VERSION=$SUSFS_VER  来源分支: gki-$KMI"
             MISSING=""
