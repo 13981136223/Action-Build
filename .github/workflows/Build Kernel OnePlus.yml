@@ -1638,6 +1638,16 @@ jobs:
           # 注意这是「测量」不是「闸门」：对不上不代表构建失败，代表刷进去模块会拒载，
           # 所以用 continue-on-error，但把 VERDICT 单独打到摘要里，绝不当成绿灯。
           cd "$GITHUB_WORKSPACE"
+          # 脚本在本仓库 checkout 出来的 scripts/ 里（$GITHUB_WORKSPACE/scripts）。
+          # kernel_workspace/Action-Build 是 Configure Git 现 clone 的上游 Numbersf 仓库，
+          # 里面没有我们新增的 js —— 上一轮就因路径指错，node 报 Cannot find module，
+          # 又被 tee 吃成空文件，只留下一句「没有输出判定行」，差点当成绿灯。
+          SCRIPT="$GITHUB_WORKSPACE/scripts/crc_compare.js"
+          STOCK="$GITHUB_WORKSPACE/scripts/crc_stock.json"
+          for F in "$SCRIPT" "$STOCK"; do
+            [ -f "$F" ] || { echo "::error::缺少 $F，CRC 对表做不了（这不是通过）"; exit 1; }
+          done
+          echo "对表脚本就位: $SCRIPT"
           find kernel_workspace -type f -name Module.symvers 2>/dev/null | head -20 > symvers.list
           N=$(wc -l < symvers.list)
           echo "找到 Module.symvers 文件数: $N"
@@ -1646,10 +1656,10 @@ jobs:
             exit 0
           fi
           echo "=== 使用原厂 game_opt（vermagic 6.1.57，OEM 构建）等模块的 CRC 需求 ==="
-          node kernel_workspace/Action-Build/scripts/crc_compare.js kernel_workspace/Action-Build/scripts/crc_stock.json $(tr '\n' ' ' < symvers.list) \
-            | tee crc-verdict.txt
+          set -o pipefail
+          node "$SCRIPT" "$STOCK" $(tr '\n' ' ' < symvers.list) | tee crc-verdict.txt
           echo "--- VERDICT 行 ---"
-          grep -a 'VERDICT' crc-verdict.txt || echo "没有输出判定行，视为未证"
+          grep -a 'VERDICT' crc-verdict.txt || { echo "::error::CRC 对表没输出判定行，视为未证"; exit 1; }
           rm -f symvers.list
 
       - name: Add flash-time guards to AnyKernel3
@@ -1747,11 +1757,15 @@ jobs:
           # 读取器是仓库里的 scripts/read_mod_value.js，本地已用合成 ELF 单测过
           # （能读出 60），因为构建机上用 python 我这边没法先验，Node 两边都能跑。
           cd "$GITHUB_WORKSPACE"
+          # 同 CRC 那一步的路坑：用本仓库 checkout 的 scripts/，不用上游 clone。
+          READER="$GITHUB_WORKSPACE/scripts/read_mod_value.js"
+          [ -f "$READER" ] || { echo "::error::缺少 $READER，改码入产物的验证做不了"; exit 1; }
+          echo "读取器就位: $READER"
           for M in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_schedinfo; do
             KO=$(find kernel_workspace -type f -name "${M}.ko" 2>/dev/null | grep -v '/unstripped/' | head -n 1)
             [ -z "$KO" ] && { echo "$M: 本轮没产出（FAST 档不编厂商模块）"; continue; }
             echo "===== $M  <- $KO ====="
-            node kernel_workspace/Action-Build/scripts/read_mod_value.js "$KO" || echo "  读取失败: $M"
+            node "$READER" "$KO" || { echo "::error::读取 $M 失败（不再当成通过）"; exit 1; }
           done
 
 
@@ -1773,6 +1787,21 @@ jobs:
             (cd kernel_workspace/kernel_platform/common 2>/dev/null \
               && git describe --tags 2>&1; git rev-parse --short HEAD 2>&1; \
                  echo "浅克隆=$(git rev-parse --is-shallow-repository 2>&1)")
+            echo "=== 本轮产出的 .ko 自报 vermagic（去重计数）==="
+            for K in $(find kernel_workspace -type f -name '*.ko' 2>/dev/null | grep -v '/unstripped/' | head -80); do
+              V=$(grep -ao 'vermagic=[^ ]*[^ ]*' "$K" 2>/dev/null | head -1 | cut -d= -f2-)
+              [ -n "$V" ] && echo "$V"
+            done | sort | uniq -c | sort -rn | head -10
+            echo "=== 自报串与 Image 是否同一条（判定行）==="
+            IMG=$(grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | head -1 | cut -d' ' -f3)
+            MODS=$(for K in $(find kernel_workspace -type f -name '*.ko' 2>/dev/null | grep -v '/unstripped/' | head -80); do
+              grep -ao 'vermagic=[^ ]*[^ ]*' "$K" 2>/dev/null | head -1 | cut -d= -f2-
+            done | sort -u)
+            echo "Image=$IMG"
+            echo "模块串去重:"; echo "$MODS" | sed 's/^/  /'
+            if [ -z "$IMG" ]; then echo "KO_VK_VERDICT: 读不到 Image 版本串，未证";
+            elif echo "$MODS" | grep -qxF "$IMG"; then echo "KO_VK_VERDICT: 至少一个模块串与 Image 完全相同";
+            else echo "KO_VK_VERDICT: 本轮自产 .ko 的 vermagic 与刷进去的 Image 不同 —— 自产 .ko 不能随包加载"; fi
             echo "=== 版本相关 KCONFIG ==="
             grep -aE '^CONFIG_LOCALVERSION|^CONFIG_KALLSYMS|^CONFIG_MODVERSIONS|^CONFIG_MODULE_FORCE_LOAD' \
               kernel_workspace/kernel_platform/common/.config 2>/dev/null || true
