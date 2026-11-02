@@ -183,6 +183,11 @@ on:
         description: "改 hmbird 调度源码的 sed 表达式（留空=不改）//sed -E expression applied to vendor/oplus/kernel/cpu/sched_ext/main.c"
         required: false
         default: ""
+      MARK_PROOF:
+        type: boolean
+        description: "改码链路自检：给 common/Makefile 打版本标记并验证是否进入 Image//prove that in-scope source edits reach the Image"
+        required: false
+        default: false
 
 jobs:
   build:
@@ -1244,6 +1249,16 @@ jobs:
           echo "=== 实际改动 ==="
           diff -u "$SRC.orig" "$SRC" || true
 
+      - name: Inject build marker into common Makefile
+        if: ${{ github.event.inputs.MARK_PROOF == 'true' }}
+        run: |
+          set -e
+          cd kernel_workspace/kernel_platform/common
+          grep -nE '^EXTRAVERSION *=' Makefile
+          sed -i -E 's/^EXTRAVERSION *=.*/EXTRAVERSION = -ace5mark/' Makefile
+          echo "=== 改后 ==="
+          grep -nE '^EXTRAVERSION *=' Makefile
+
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
@@ -1564,6 +1579,20 @@ jobs:
         id: suffix
         run: |
           echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}" >> $GITHUB_OUTPUT
+
+      - name: Verify marker reached the Image
+        if: ${{ github.event.inputs.MARK_PROOF == 'true' }}
+        run: |
+          IMG=./AnyKernel3/Image
+          [ -f "$IMG" ] || { echo "::error::无 AnyKernel3/Image，无法验证"; exit 1; }
+          echo "=== Image 自报版本 ==="
+          grep -aoE "Linux version [^ ]+" "$IMG" | head -2
+          if grep -aq "ace5mark" "$IMG"; then
+            echo "✅ 源码改动已进入 Image —— 改码到产物的链路成立"
+          else
+            echo "::error::Image 中找不到 ace5mark —— common/Makefile 的改动未进入产物"
+            exit 1
+          fi
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
