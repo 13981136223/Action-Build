@@ -539,8 +539,23 @@ jobs:
             : > devprofiles.txt
           fi
           LINE=$(grep -m1 "^${{ github.event.inputs.FILE }}|" devprofiles.txt || true)
-          SU=$(printf '%s' "$LINE" | cut -d'|' -f2-)
-          GD=$(printf '%s' "$LINE" | cut -d'|' -f3-)
+          # 必须用 -f2 / -f3（单字段），不能写 -f2- / -f3-。
+          # run 41543042993 就是栽在这里：-f2- 把第 2、3 列一起捞出并带上分隔符，
+          # STOCK_UTS 变成「6.1.118-…e346|OP5D2BL1 PKG110」，钉串步骤拿它自比当然通过，
+          # 但这条串随后进了内核的 $(shell …)，'|' 被 dash 当成管道 ——
+          # 编译到 UPD include/generated/uapi/linux/version.h 之后直接
+          # /bin/sh: 1: OP5D2BL1: not found，整个构建 Error 2。
+          SU=$(printf '%s' "$LINE" | cut -d'|' -f2)
+          GD=$(printf '%s' "$LINE" | cut -d'|' -f3)
+          # 钉串会原样进 UTS_RELEASE，所以只允许 uname -r 里能出现的字符；
+          # 有空格、竖线、引号就让它在第一步炸掉，别浪费三十分钟编译再炸。
+          # （不能用 case + [!…  ]：模式里有空格会被当成 token 结束，dash 直接语法错误）
+          if printf '%s' "$SU" | grep -q '[^A-Za-z0-9._+-]'; then
+            echo "::error::机型档案第 2 列含非法字符：[$SU]（只许字母数字点横线下划线）"; exit 1
+          fi
+          if printf '%s' "$GD" | grep -q '[^A-Za-z0-9._ -]'; then
+            echo "::error::机型档案第 3 列含非法字符：[$GD]（只许字母数字点横线下划线和空格）"; exit 1
+          fi
           echo "STOCK_UTS=$SU" >> "$GITHUB_ENV"
           echo "GUARD_DEVICES=$GD" >> "$GITHUB_ENV"
           echo "本次 FILE=${{ github.event.inputs.FILE }} 钉串=[$SU] 白名单=[$GD]"
@@ -1362,6 +1377,11 @@ jobs:
           # 换成只输出固定尾巴（不再依赖 git describe，避免每次构建串都在变）。
           set -e
           TARGET="${{ env.STOCK_UTS }}"
+          # 消费端也再验一次：这条串会进 UTS_RELEASE，被内核 Makefile 的 $(shell …)
+          # 原样拼进命令行，'|' / 空格 / 引号都会把编译炸掉（run 41543042993）。
+          if printf '%s' "$TARGET" | grep -q '[^A-Za-z0-9._+-]'; then
+            echo "::error::STOCK_UTS 含非法字符，拒绝钉串：[$TARGET]"; exit 1
+          fi
           # 别的机型没有已知的原厂串时留空：不钉串，闸门仍会按本机 KMI 前缀拦住错线内核。
           if [ -z "$TARGET" ]; then
             echo "::warning::STOCK_UTS 为空 —— 本机原厂 uname -r 未知，跳过钉串（闸门按 $KERNEL_VERSION 前缀拦）"
