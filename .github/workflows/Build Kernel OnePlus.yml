@@ -1661,6 +1661,22 @@ jobs:
           echo "收到 $n 个调度模块"
           cat sched-modules/modinfo.txt
 
+      - name: Read patched default out of the built module
+        if: always()
+        run: |
+          # dist/ 下的 .ko 虽保留了 .symtab，但要读的是 .data 里的整数初值；
+          # 这一步把「源码改动 → 模块二进制」直接证掉，不看绿灯。
+          # 读取器是仓库里的 scripts/read_mod_value.js，本地已用合成 ELF 单测过
+          # （能读出 60），因为构建机上用 python 我这边没法先验，Node 两边都能跑。
+          cd "$GITHUB_WORKSPACE"
+          for M in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_schedinfo; do
+            KO=$(find kernel_workspace -type f -name "${M}.ko" 2>/dev/null | grep -v '/unstripped/' | head -n 1)
+            [ -z "$KO" ] && { echo "$M: 本轮没产出（FAST 档不编厂商模块）"; continue; }
+            echo "===== $M  <- $KO ====="
+            node Action-Build/scripts/read_mod_value.js "$KO" || echo "  读取失败: $M"
+          done
+
+
       - name: Report our exact vermagic
         if: always()
         run: |
