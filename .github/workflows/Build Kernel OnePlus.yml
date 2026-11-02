@@ -1669,12 +1669,20 @@ jobs:
           # kernel_workspace/Action-Build 是 Configure Git 现 clone 的上游 Numbersf 仓库，
           # 里面没有我们新增的 js —— 上一轮就因路径指错，node 报 Cannot find module，
           # 又被 tee 吃成空文件，只留下一句「没有输出判定行」，差点当成绿灯。
-          SCRIPT="$GITHUB_WORKSPACE/scripts/crc_compare.js"
-          STOCK="$GITHUB_WORKSPACE/scripts/crc_stock.json"
-          for F in "$SCRIPT" "$STOCK"; do
-            [ -f "$F" ] || { echo "::error::缺少 $F，CRC 对表做不了（这不是通过）"; exit 1; }
-          done
-          echo "对表脚本就位: $SCRIPT"
+          # 两个候选路径都实测取不到，原因查清了：
+          #   1) kernel_workspace/Action-Build 是 Configure Git 现 clone 的上游 Numbersf 仓库，
+          #      里面只有上游自带的脚本，没有我们 fork 新加的 js；
+          #   2) $GITHUB_WORKSPACE 那一份 checkout 被 Maximize Build Space 挂上来的新卷
+          #      整个盖掉了（mount 点正是 /home/runner/work/Action-Build/Action-Build），
+          #      所以仓库根下的 scripts/ 在后续步骤里根本不存在。
+          # 改成按本次 commit 从 raw 地址取回，取回后还要验内容，绝不静默空跑。
+          RAW="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/scripts"
+          curl -fsSL "$RAW/crc_compare.js" -o crc_compare.js || { echo "::error::下载 crc_compare.js 失败"; exit 1; }
+          curl -fsSL "$RAW/crc_stock.json" -o crc_stock.json || { echo "::error::下载 crc_stock.json 失败"; exit 1; }
+          SCRIPT="$PWD/crc_compare.js"; STOCK="$PWD/crc_stock.json"
+          { [ -s "$SCRIPT" ] && grep -q 'VERDICT' "$SCRIPT"; } || { echo "::error::取回的 crc_compare.js 内容不对：$RAW"; exit 1; }
+          grep -q 'module_layout' "$STOCK" || { echo "::error::取回的 crc_stock.json 内容不对（没有 module_layout）"; exit 1; }
+          echo "对表脚本就位: $SCRIPT ($(wc -c < "$SCRIPT") 字节)、需求表 $(wc -c < "$STOCK") 字节"
           find kernel_workspace -type f -name Module.symvers 2>/dev/null | head -20 > symvers.list
           N=$(wc -l < symvers.list)
           echo "找到 Module.symvers 文件数: $N"
@@ -1785,9 +1793,12 @@ jobs:
           # （能读出 60），因为构建机上用 python 我这边没法先验，Node 两边都能跑。
           cd "$GITHUB_WORKSPACE"
           # 同 CRC 那一步的路坑：用本仓库 checkout 的 scripts/，不用上游 clone。
-          READER="$GITHUB_WORKSPACE/scripts/read_mod_value.js"
-          [ -f "$READER" ] || { echo "::error::缺少 $READER，改码入产物的验证做不了"; exit 1; }
-          echo "读取器就位: $READER"
+          # 同 CRC 那一步：仓库根被挂载盖掉，按本次 commit 从 raw 取回。
+          RAW="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/scripts"
+          curl -fsSL "$RAW/read_mod_value.js" -o read_mod_value.js || { echo "::error::下载 read_mod_value.js 失败"; exit 1; }
+          READER="$PWD/read_mod_value.js"
+          { [ -s "$READER" ] && grep -q '符号' "$READER"; } || { echo "::error::取回的 read_mod_value.js 内容不对：$RAW"; exit 1; }
+          echo "读取器就位: $READER ($(wc -c < "$READER") 字节)"
           for M in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_schedinfo; do
             KO=$(find kernel_workspace -type f -name "${M}.ko" 2>/dev/null | grep -v '/unstripped/' | head -n 1)
             [ -z "$KO" ] && { echo "$M: 本轮没产出（FAST 档不编厂商模块）"; continue; }
