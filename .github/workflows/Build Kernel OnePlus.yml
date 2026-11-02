@@ -1584,29 +1584,65 @@ jobs:
           name: AnyKernel3_SukiSUUltra_${{ env.KSUVER }}_${{ steps.extract_info.outputs.value }}(${{ env.CKERNEL_VERSION }})${{ steps.suffix.outputs.value }}
           path: ./AnyKernel3/*
 
-      - name: Collect hmbird sched_ext module
-        id: sched_ext
+      - name: Collect Oplus scheduler modules
+        id: sched_mod
         run: |
           cd "$GITHUB_WORKSPACE"
-          KO=$(find kernel_workspace -type f -name 'oplus_bsp_sched_ext.ko' 2>/dev/null | head -n 1)
-          if [ -z "$KO" ]; then
-            echo "::warning::构建产物中未找到 oplus_bsp_sched_ext.ko —— 该 DDK 模块未纳入本次构建范围"
-            echo "found=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "找到调度模块: $KO"
-          mkdir -p sched-ext-module
-          cp "$KO" sched-ext-module/oplus_bsp_sched_ext.ko
-          ls -la sched-ext-module
-          modinfo sched-ext-module/oplus_bsp_sched_ext.ko 2>/dev/null | grep -E '^(vermagic|name|version|depends)' || true
-          echo "found=true" >> "$GITHUB_OUTPUT"
+          # 调度族在 vendor 树里，FAST_BUILD=true 时整棵树都不会产出，
+          # 所以这里找不到 .ko 不等于「源码有问题」，只等于「这轮没编 vendor」。
+          mkdir -p sched-modules
+          : > sched-modules/modinfo.txt
+          n=0
+          for m in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_eas_opt \
+                   oplus_bsp_schedinfo oplus_bsp_task_cpustats oplus_bsp_task_sched \
+                   oplus_bsp_task_overload oplus_bsp_waker_identify oplus_bsp_omrg \
+                   oplus_bsp_cpufreq_health sched-penalty sched-walt mpam_game \
+                   oplus_bsp_sched_ext; do
+            KO=$(find kernel_workspace -type f -name "${m}.ko" 2>/dev/null \
+                 | grep -v '/unstripped/' | head -n 1)
+            [ -z "$KO" ] && { echo "$m  未构建" >> sched-modules/modinfo.txt; continue; }
+            cp "$KO" "sched-modules/${m}.ko"
+            {
+              echo "===== ${m}  <- $KO ====="
+              modinfo "sched-modules/${m}.ko" 2>&1 \
+                | grep -E '^(vermagic|name|version|depends|description|parm)'
+            } >> sched-modules/modinfo.txt
+            n=$((n+1))
+          done
+          echo "收到 $n 个调度模块"
+          cat sched-modules/modinfo.txt
 
-      - name: Upload hmbird sched_ext module
-        if: steps.sched_ext.outputs.found == 'true'
+      - name: Report our exact vermagic
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # 刷进去的内核与随包 .ko 都吃这条串；原厂 /vendor/lib/modules 期望的
+          # 是手机 uname -r，两者必须逐字相同，否则原厂模块全部拒载。
+          {
+            echo "=== kernel.release（这就是 vermagic 的那一条串）==="
+            find kernel_workspace -type f -name kernel.release 2>/dev/null | head -5 | while read -r f; do
+              echo "$f -> $(cat "$f")"
+            done
+            echo "=== Image 自报版本 ==="
+            strings -a AnyKernel3/Image 2>/dev/null | grep -m2 -a 'Linux version' || \
+              grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | sort -u | head -3
+            echo "=== git describe 现场 ==="
+            (cd kernel_workspace/kernel_platform/common 2>/dev/null \
+              && git describe --tags 2>&1; git rev-parse --short HEAD 2>&1; \
+                 echo "浅克隆=$(git rev-parse --is-shallow-repository 2>&1)")
+            echo "=== 版本相关 KCONFIG ==="
+            grep -aE '^CONFIG_LOCALVERSION|^CONFIG_KALLSYMS|^CONFIG_MODVERSIONS|^CONFIG_MODULE_FORCE_LOAD' \
+              kernel_workspace/kernel_platform/common/.config 2>/dev/null || true
+          } | tee vermagic-report.txt
+
+      - name: Upload scheduler modules and vermagic report
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: HMBIRD-sched_ext-${{ steps.extract_info.outputs.value }}
-          path: ./sched-ext-module/*
+          name: sched-modules-${{ steps.extract_info.outputs.value }}
+          path: |
+            ./sched-modules/*
+            ./vermagic-report.txt
 
       - name: Inventory built kernel modules
         if: always()
