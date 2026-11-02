@@ -1288,17 +1288,16 @@ jobs:
           grep -q '^EXTRAVERSION =$' Makefile || { echo "::error::EXTRAVERSION 没清空"; exit 1; }
 
           cp scripts/setlocalversion scripts/setlocalversion.orig
-          # 用 heredoc，不用外层 printf：上一版把 'printf "...%s..." "$SUFFIX"' 当生成器，
-          # 文件内容里的 %s 被外层 printf 当格式吃掉，生成的脚本成了 printf "-android…"，
-          # dash 直接报 Illegal option -a（run 41396320984 就是这么被硬断言拦下的）。
-          cat > scripts/setlocalversion <<EOF
-#!/bin/sh
-# pinned by workflow：原逻辑依赖 git describe，会让每次构建的串都变
-printf '%s\\n' '$SUFFIX'
-EOF
+          # 生成器踩了两次坑，都记在这里：
+          #  1) 外层 printf 会把文件内容里的 %s 当自己的格式吃掉（run 41396320984
+          #     生成的成了 printf "-android…"，dash 报 Illegal option -a，被硬断言拦下）；
+          #  2) heredoc 正文必须缩进到 block scalar 的同级列，顶格写会终结 `run: |`，
+          #     GitHub 解析不出 workflow_dispatch（422 Workflow does not have trigger）。
+          # 现在用单行 echo 组，既不跨行也没有格式冲突。
+          { echo '#!/bin/sh'; echo "# pinned by workflow: 原逻辑依赖 git describe，会让每次构建的串都变"; echo "printf '%s\\n' '$SUFFIX'"; } > scripts/setlocalversion
           chmod +x scripts/setlocalversion
-          echo "--- 生成的 setlocalversion 内容 ---"
-          cat -A scripts/setlocalversion | sed -n '1,4p'
+          echo "--- 生成的 setlocalversion ---"
+          cat scripts/setlocalversion
           OUT="$(./scripts/setlocalversion .)"
           echo "setlocalversion 输出: [$OUT]"
           [ "$BASE$OUT" = "$TARGET" ] || {
