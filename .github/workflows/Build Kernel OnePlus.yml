@@ -198,16 +198,6 @@ on:
         description: "sed -E 表达式，应用于 PATCH_TARGET 指定的源码文件（留空=不改）//sed -E expression applied to PATCH_TARGET"
         required: false
         default: ""
-      STOCK_UTS:
-        description: "原厂 uname -r（钉版本串用；留空=不钉，闸门只按本机 KMI 前缀拦错线内核）"
-        required: false
-        type: string
-        default: 6.1.118-android14-11-o-g778e4490e346
-      GUARD_DEVICES:
-        description: "闸门机型白名单，空格分隔（例：OP5D2BL1 PKG110）"
-        required: false
-        type: string
-        default: "OP5D2BL1 PKG110"
       PATCH_TARGET:
         type: string
         description: "改码目标路径片段（find -path 匹配）//path fragment for find -path"
@@ -532,6 +522,29 @@ jobs:
             sed -i 's/check_defconfig = None,/check_defconfig = "disabled",/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
             sed -i 's/if check_defconfig == None:/if False:  # check_defconfig == None:/' kernel_platform/build/kernel/kleaf/common_kernels.bzl
           fi
+
+      - name: Load device profile
+        run: |
+          # workflow_dispatch 最多 25 个输入，而我们已经用到 24 个 —— 所以每台机型的
+          # 「原厂 uname -r」和「闸门机型白名单」不再做成输入，改成仓库里的一张表：
+          #   scripts/device-profiles.txt  每行  FILE|原厂串|机型白名单
+          # 表里没有的机型 = 不钉串 + 只按 SoC/安卓版本拦（宁保守也不误钉）。
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          URL="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/scripts/device-profiles.txt"
+          if curl -fsSL "$URL" -o devprofiles.txt; then
+            echo "机型档案已取回：$(grep -c '' devprofiles.txt) 行"
+          else
+            echo "::warning::取不到机型档案（$URL），本轮按不钉串、不加机型白名单处理"
+            : > devprofiles.txt
+          fi
+          LINE=$(grep -m1 "^${{ github.event.inputs.FILE }}|" devprofiles.txt || true)
+          SU=$(printf '%s' "$LINE" | cut -d'|' -f2-)
+          GD=$(printf '%s' "$LINE" | cut -d'|' -f3-)
+          echo "STOCK_UTS=$SU" >> "$GITHUB_ENV"
+          echo "GUARD_DEVICES=$GD" >> "$GITHUB_ENV"
+          echo "本次 FILE=${{ github.event.inputs.FILE }} 钉串=[$SU] 白名单=[$GD]"
+          if [ -z "$SU" ]; then echo "PIN_PLAN: 无原厂串，本轮不钉版本串"; else echo "PIN_PLAN: 钉成 $SU"; fi
 
       - name: Kernel Version Handling
         run: |
@@ -1348,7 +1361,7 @@ jobs:
           # 所以这里把版本串钉成原厂那条：清空 EXTRAVERSION，并把 setlocalversion
           # 换成只输出固定尾巴（不再依赖 git describe，避免每次构建串都在变）。
           set -e
-          TARGET="${{ github.event.inputs.STOCK_UTS }}"
+          TARGET="${{ env.STOCK_UTS }}"
           # 别的机型没有已知的原厂串时留空：不钉串，闸门仍会按本机 KMI 前缀拦住错线内核。
           if [ -z "$TARGET" ]; then
             echo "::warning::STOCK_UTS 为空 —— 本机原厂 uname -r 未知，跳过钉串（闸门按 $KERNEL_VERSION 前缀拦）"
@@ -1797,7 +1810,7 @@ jobs:
           # 闸门期望值全部由本次构建的机型/SoC/KMI 推导，不再写死 Ace5 ——
           # 否则给 oneplus_13 出的包会拿 Ace5 的白名单去拦，或者反过来放行错的机器。
           CPU_UC=$(echo "$CPU" | tr 'a-z' 'A-Z')
-          DEV_PAT=$(echo "${{ github.event.inputs.GUARD_DEVICES }}" | tr ' ' '\n' | grep -v '^$' | sed 's/^/*/; s/$/*/' | paste -sd'|' -)
+          DEV_PAT=$(echo "${{ env.GUARD_DEVICES }}" | tr ' ' '\n' | grep -v '^$' | sed 's/^/*/; s/$/*/' | paste -sd'|' -)
           [ -n "$DEV_PAT" ] || DEV_PAT='*'
           SOC_PAT="*$CPU_UC*|*$CPUD*|*qcom*"
           AND_PAT="$ANDROID_SHORT_VERSION*"
