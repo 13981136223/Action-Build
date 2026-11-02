@@ -1627,6 +1627,280 @@ jobs:
         run: |
           echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}" >> $GITHUB_OUTPUT
 
+      - name: Add flash-time guards to AnyKernel3
+        run: |
+          # 这个 fork 的 tools/ak3-core.sh 已经把 do.devicecheck / supported.versions
+          # 的实现整段删掉了（grep 无 deviceCheck、无 sdkversion），所以 anykernel.sh 里
+          # 那些开关都是空头 —— 刷错机型、错固件都不会拦。
+          # 而我们的包只在「当前内核串 == 本包内核串」时才安全：vermagic 不符会让
+          # /vendor/lib/modules 那 406 个原厂模块全部拒载（Wi-Fi/触控/调度一起废）。
+          # 所以在第一个动分区的动作 split_boot 之前，自己插一道闸门。
+          set -e
+          cd "$GITHUB_WORKSPACE/AnyKernel3"
+          EXPECTED=$(grep -ao 'Linux version [^ ]*' Image | head -1 | cut -d' ' -f3)
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::读不到 Image 的版本串，拒绝在不加闸门的情况下出包"
+            exit 1
+          fi
+          echo "本包内核版本串（闸门将要求手机 uname -r 与此逐字相同）: $EXPECTED"
+
+          cp anykernel.sh anykernel.sh.orig
+          G=guard.sh
+          : > "$G"
+          echo '# ---- 刷机时闸门（由流水线插入，原厂包没有这道保护）----' >> "$G"
+          echo 'EXPECTED_UTS="'"$EXPECTED"'"' >> "$G"
+          echo 'CUR_UTS=$(uname -r)' >> "$G"
+          echo 'ui_print "expected kernel: $EXPECTED_UTS"' >> "$G"
+          echo 'ui_print "current  kernel: $CUR_UTS"' >> "$G"
+          echo 'BYPASS=""' >> "$G"
+          echo 'for b in ./IGNORE_UTS_CHECK /sdcard/IGNORE_UTS_CHECK /tmp/IGNORE_UTS_CHECK; do' >> "$G"
+          echo '  [ -f "$b" ] && BYPASS=1 && ui_print "found bypass: $b"' >> "$G"
+          echo 'done' >> "$G"
+          echo 'if [ "$CUR_UTS" != "$EXPECTED_UTS" ] && [ -z "$BYPASS" ]; then' >> "$G"
+          echo '  ui_print "CURRENT KERNEL STRING MISMATCH"' >> "$G"
+          echo '  ui_print "Stock vendor modules will refuse to load (vermagic + MODVERSIONS)."' >> "$G"
+          echo '  ui_print "Wi-Fi / touch / scheduler modules would all fail to load."' >> "$G"
+          echo '  ui_print "If you are sure, add a file named IGNORE_UTS_CHECK next to the zip"' >> "$G"
+          echo '  ui_print "and re-flash, or place it in the same directory as anykernel.sh."' >> "$G"
+          echo '  abort "aborted by kernel version guard"' >> "$G"
+          echo 'fi' >> "$G"
+          echo 'DEV=$(getprop ro.product.device)' >> "$G"
+          echo 'MARKET=$(getprop ro.product.vendor.device)' >> "$G"
+          echo 'ui_print "device: $DEV / $MARKET"' >> "$G"
+          echo 'case "$DEV$MARKET" in' >> "$G"
+          echo '  *OP5D2BL1*|*PKG110*) : ;;' >> "$G"
+          echo '  *) if [ -z "$BYPASS" ]; then abort "not a OnePlus Ace5 (PKG110/OP5D2BL1)"; fi ;;' >> "$G"
+          echo 'esac' >> "$G"
+          echo '' >> "$G"
+
+          # 插到第一个会写分区的动作 split_boot 之前
+          awk 'BEGIN{while((getline l < "guard.sh")>0) g=g l ORS}
+               /^split_boot$/ && !done {printf "%s", g; done=1}
+               {print}' anykernel.sh > anykernel.sh.new
+          if cmp -s anykernel.sh anykernel.sh.new; then
+            echo "::error::插入没有产生任何改动，拒绝用未加闸门的包"
+            exit 1
+          fi
+          grep -q 'aborted by kernel version guard' anykernel.sh.new || { echo "::error::闸门文本不在新脚本里"; exit 1; }
+          mv anykernel.sh.new anykernel.sh
+          chmod +x anykernel.sh
+          echo "=== 语法自检 ==="
+          sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
+          echo "=== 插入点上下文 ==="
+          grep -n -B2 -A1 '^split_boot
+
+      - name: Upload AnyKernel3
+        uses: actions/upload-artifact@v7
+        with:
+          name: AnyKernel3_SukiSUUltra_${{ env.KSUVER }}_${{ steps.extract_info.outputs.value }}(${{ env.CKERNEL_VERSION }})${{ steps.suffix.outputs.value }}
+          path: ./AnyKernel3/*
+
+      - name: Collect Oplus scheduler modules
+        id: sched_mod
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # 调度族在 vendor 树里，FAST_BUILD=true 时整棵树都不会产出，
+          # 所以这里找不到 .ko 不等于「源码有问题」，只等于「这轮没编 vendor」。
+          mkdir -p sched-modules
+          : > sched-modules/modinfo.txt
+          n=0
+          for m in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_eas_opt \
+                   oplus_bsp_schedinfo oplus_bsp_task_cpustats oplus_bsp_task_sched \
+                   oplus_bsp_task_overload oplus_bsp_waker_identify oplus_bsp_omrg \
+                   oplus_bsp_cpufreq_health sched-penalty sched-walt mpam_game \
+                   oplus_bsp_sched_ext; do
+            KO=$(find kernel_workspace -type f -name "${m}.ko" 2>/dev/null \
+                 | grep -v '/unstripped/' | head -n 1)
+            [ -z "$KO" ] && { echo "$m  未构建" >> sched-modules/modinfo.txt; continue; }
+            cp "$KO" "sched-modules/${m}.ko"
+            {
+              echo "===== ${m}  <- $KO ====="
+              modinfo "sched-modules/${m}.ko" 2>&1 \
+                | grep -E '^(vermagic|name|version|depends|description|parm)'
+            } >> sched-modules/modinfo.txt
+            n=$((n+1))
+          done
+          echo "收到 $n 个调度模块"
+          cat sched-modules/modinfo.txt
+
+      - name: Read patched default out of the built module
+        if: always()
+        run: |
+          # dist/ 下的 .ko 虽保留了 .symtab，但要读的是 .data 里的整数初值；
+          # 这一步把「源码改动 → 模块二进制」直接证掉，不看绿灯。
+          # 读取器是仓库里的 scripts/read_mod_value.js，本地已用合成 ELF 单测过
+          # （能读出 60），因为构建机上用 python 我这边没法先验，Node 两边都能跑。
+          cd "$GITHUB_WORKSPACE"
+          for M in oplus_bsp_frame_boost oplus_bsp_sched_assist oplus_bsp_schedinfo; do
+            KO=$(find kernel_workspace -type f -name "${M}.ko" 2>/dev/null | grep -v '/unstripped/' | head -n 1)
+            [ -z "$KO" ] && { echo "$M: 本轮没产出（FAST 档不编厂商模块）"; continue; }
+            echo "===== $M  <- $KO ====="
+            node Action-Build/scripts/read_mod_value.js "$KO" || echo "  读取失败: $M"
+          done
+
+
+      - name: Report our exact vermagic
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # 刷进去的内核与随包 .ko 都吃这条串；原厂 /vendor/lib/modules 期望的
+          # 是手机 uname -r，两者必须逐字相同，否则原厂模块全部拒载。
+          {
+            echo "=== kernel.release（这就是 vermagic 的那一条串）==="
+            find kernel_workspace -type f -name kernel.release 2>/dev/null | head -5 | while read -r f; do
+              echo "$f -> $(cat "$f")"
+            done
+            echo "=== Image 自报版本 ==="
+            strings -a AnyKernel3/Image 2>/dev/null | grep -m2 -a 'Linux version' || \
+              grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | sort -u | head -3
+            echo "=== git describe 现场 ==="
+            (cd kernel_workspace/kernel_platform/common 2>/dev/null \
+              && git describe --tags 2>&1; git rev-parse --short HEAD 2>&1; \
+                 echo "浅克隆=$(git rev-parse --is-shallow-repository 2>&1)")
+            echo "=== 版本相关 KCONFIG ==="
+            grep -aE '^CONFIG_LOCALVERSION|^CONFIG_KALLSYMS|^CONFIG_MODVERSIONS|^CONFIG_MODULE_FORCE_LOAD' \
+              kernel_workspace/kernel_platform/common/.config 2>/dev/null || true
+          } | tee vermagic-report.txt
+
+      - name: Upload scheduler modules and vermagic report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sched-modules-${{ steps.extract_info.outputs.value }}
+          path: |
+            ./sched-modules/*
+            ./vermagic-report.txt
+
+      - name: Inventory built kernel modules
+        if: always()
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          # 真实产物根目录是 kernel_platform/common/out（由 zram.ko 的实际路径证实），
+          # 只查 kernel_platform/out 会误判为「未构建」，所以整树扫。
+          OUT=kernel_workspace
+          {
+            echo "=== out 下所有 .ko（构建范围真实清单）==="
+            find "$OUT" -type f -name '*.ko' 2>/dev/null | sed "s|$OUT/||" | sort
+            echo
+            echo "=== 计数 ==="
+            find "$OUT" -type f -name '*.ko' 2>/dev/null | wc -l
+            echo
+            echo "=== 关键调度/性能模块是否在产物里 ==="
+            for m in oplus_bsp_sched_ext sa_balance sa_common frame_boost oplus_game \
+                    game_opt oplus_overload oplus_slc zram waker_identify; do
+              hit=$(find "$OUT" -type f -name "*${m}*.ko" 2>/dev/null | head -1)
+              printf "%-24s %s\n" "$m" "${hit:-未构建}"
+            done
+          } | tee module-inventory.txt
+
+      - name: Upload module inventory
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: module-inventory-${{ steps.extract_info.outputs.value }}
+          path: ./module-inventory.txt
+
+      - name: Extract and Process ZRAM Module
+        if: startsWith(github.event.inputs.ZRAM, '1/')
+        id: zram_find
+        run: |
+          set -e
+          ZRAM_ZIP="${GITHUB_WORKSPACE}/kernel_workspace/Action-Build/ZRAM.zip"
+
+          if [ ! -f "$ZRAM_ZIP" ]; then
+            echo "❌ 未找到 ZRAM.zip: $ZRAM_ZIP"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          unzip "$ZRAM_ZIP" -d ZRAM-Module
+
+          CONFIG_PROP="ZRAM-Module/config.prop"
+          if [ -f "$CONFIG_PROP" ]; then
+            echo "修改 config.prop"
+            sed -i "s/^ZRAM_ALGO=.*/ZRAM_ALGO=${ZRAM_ALGO}/" "$CONFIG_PROP"
+            sed -i "s/^ZRAM_SIZE=.*/ZRAM_SIZE=${ZRAM_SIZE}/" "$CONFIG_PROP"
+            echo "ZRAM_ALGO=${ZRAM_ALGO}"
+            echo "ZRAM_SIZE=${ZRAM_SIZE}"
+          else
+            echo "❌ 未找到 config.prop"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          target="./ZRAM-Module/zram/zram.ko"
+          echo "查找 zram.ko 模块文件..."
+          search_paths=(
+            "./kernel_workspace/kernel_platform/out"
+            "./kernel_workspace/device/qcom"
+          )
+          zram_path=""
+          for path in "${search_paths[@]}"; do
+            if [ -d "$path" ]; then
+              zram_path=$(find "$path" -type f -name "zram.ko" | head -n 1)
+              [ -n "$zram_path" ] && break
+            fi
+          done
+          if [ -z "$zram_path" ]; then
+            zram_path=$(find "./kernel_workspace" -type f -name "zram.ko" | head -n 1)
+          fi
+          if [ -n "$zram_path" ] && [ -f "$zram_path" ]; then
+            echo "✅ zram.ko file finally located at: $zram_path"
+            install -D "$zram_path" "$target"
+          else
+            echo "❌ 未找到 zram.ko 文件，可能是未支持的内核版本或构建失败"
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+      - name: Upload ZRAM Module
+        if: startsWith(github.event.inputs.ZRAM, '1/') && steps.zram_find.outputs.upload != 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ZRAM-Module_${{ env.KERNEL_VERSION }}_${{ steps.extract_info.outputs.value }}
+          path: ZRAM-Module/*
+
+      - name: Check Cache Size Before Save
+        if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' }}
+        id: cache_size_check
+        run: |
+          check_size() {
+            local CACHE_DIR="$1"
+            local CACHE_NAME="$2"
+            if [[ ! -d "$CACHE_DIR" ]]; then
+              echo "${CACHE_NAME}_save=false" >> "$GITHUB_OUTPUT"
+              return
+            fi
+            SIZE_MB=$(du -sm "$CACHE_DIR" | cut -f1)
+            echo "$CACHE_DIR 大小: ${SIZE_MB}MB"
+            if (( SIZE_MB >= 5 )); then
+              echo "${CACHE_NAME}_save=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning title=Cache Warning::$CACHE_NAME 小于 5MB，跳过保存"
+              echo "${CACHE_NAME}_save=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          check_size "${{ env.CCACHE_DIR }}" "ccache"
+          check_size "${{ github.workspace }}/kernel_workspace/.thinlto-cache" "thinlto"
+
+      - name: Save Ccache
+        if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && steps.cache_size_check.outputs.ccache_save == 'true' && steps.restore-ccache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-${{ env.BUILD_METHOD }}-${{ github.event.inputs.FAST_BUILD == 'true' && 'alpha' || 'beta' }}-17.0
+
+      - name: Save ThinLTO Cache
+        if: ${{ github.event.inputs.BUILD_NOCACHE == 'false' && github.event.inputs.FAST_BUILD == 'true' && steps.cache_size_check.outputs.thinlto_save == 'true' && steps.restore-thinlto.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ github.workspace }}/kernel_workspace/.thinlto-cache
+          key: thinlto-${{ runner.os }}-${{ github.ref_name }}-${{ github.event.inputs.FILE }}-17.0
+
+      - name: Post-build Disk Check
+        run: df -h anykernel.sh | head -12
+          rm -f "$G" anykernel.sh.orig   # 临时文件不要打进包里
+
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
         with:
