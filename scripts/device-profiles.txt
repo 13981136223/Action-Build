@@ -8,10 +8,25 @@
 #   - 原厂构建时间串（uname -v 里那段）由 BUILD_TIME 输入控制，不在这张表里。
 oneplus_ace5|6.1.118-android14-11-o-g778e4490e346|OP5D2BL1 PKG110
 oneplus_ace5_b|6.1.118-android14-11-o-g778e4490e346|OP5D2BL1 PKG110
-oneplus_ace5||
-oneplus_13||
-oneplus_13s||
-oneplus_13t||
-oneplus_pad_3||
+oneplus_ace5_pro||
 oneplus_ace3_pro||
 oneplus_pad_pro||
+# 下面这些是本轮新收的 6.6 / 6.12 机型。第 2 列故意留空：
+# 没人在这台机器上跑过 uname -r 之前，填任何串都是猜，猜错会让原厂模块集体拒载。
+# 留空的效果 = 不钉版本串，闸门仍按「KMI 前缀 + SoC + 安卓大版本」三重拦。
+oneplus_13||
+oneplus_13_global||
+oneplus_13s||
+oneplus_13t||
+oneplus_pad_2_pro||
+oneplus_pad_3||
+oneplus_15||
+oneplus_15t||
+oneplus_pad_3_pro||
+oneplus_pad_4||
+oneplus_12_u||
+oneplus_12_v||
+oneplus_13r||
+oneplus_ace3_pro_v||
+oneplus_pad2_v||
+oneplus_pad_pro_v||
