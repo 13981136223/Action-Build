@@ -1688,10 +1688,16 @@ jobs:
 
       - name: Download Latest SUSFS Module from Release
         if: ${{ github.event.inputs.SUSFS_CI == 'Release' && github.event.inputs.SUSFS_META != '-1' }}
-        continue-on-error: true
         run: |
-          wget -O ksu_module_susfs_1.5.2+_Release.zip https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip
+          # 原来这一步带 continue-on-error：下载失败就静默少发一个随包模块，
+          # 隐藏能力直接掉一档而构建还是绿的 —— 这种"少东西"的失败必须响。
+          set -e
+          wget -q -O ksu_module_susfs_1.5.2+_Release.zip https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip
+          unzip -l ksu_module_susfs_1.5.2+_Release.zip config.sh >/dev/null 2>&1 \
+            || unzip -l ksu_module_susfs_1.5.2+_Release.zip '*/config.sh' >/dev/null 2>&1 \
+            || { echo "::error::随包 susfs 模块下载/校验失败（缺 config.sh），不出这个降级包"; exit 1; }
           cp ksu_module_susfs_1.5.2+_Release.zip ./AnyKernel3/
+          echo "随包 susfs 模块就位：$(wc -c < ksu_module_susfs_1.5.2+_Release.zip) 字节"
 
       - name: Download Latest SukiSU-Ultra APK from CI
         continue-on-error: true
