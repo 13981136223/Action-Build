@@ -1815,6 +1815,7 @@ jobs:
       - name: Report our exact vermagic
         if: always()
         run: |
+          set -o pipefail
           cd "$GITHUB_WORKSPACE"
           # 刷进去的内核与随包 .ko 都吃这条串；原厂 /vendor/lib/modules 期望的
           # 是手机 uname -r，两者必须逐字相同，否则原厂模块全部拒载。
@@ -1827,9 +1828,11 @@ jobs:
             strings -a AnyKernel3/Image 2>/dev/null | grep -m2 -a 'Linux version' || \
               grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | sort -u | head -3
             echo "=== git describe 现场 ==="
-            (cd kernel_workspace/kernel_platform/common 2>/dev/null \
-              && git describe --tags 2>&1; git rev-parse --short HEAD 2>&1; \
-                 echo "浅克隆=$(git rev-parse --is-shallow-repository 2>&1)")
+            ( cd kernel_workspace/kernel_platform/common 2>/dev/null && {
+                git describe --tags 2>&1 || true
+                git rev-parse --short HEAD 2>&1 || true
+                echo "浅克隆=$(git rev-parse --is-shallow-repository 2>&1 || true)"
+              } ) || true
             echo "=== 本轮产出的 .ko 自报 vermagic（去重计数）==="
             for K in $(find kernel_workspace -type f -name '*.ko' 2>/dev/null | grep -v '/unstripped/' | head -80); do
               V=$(grep -ao 'vermagic=[^ ]*[^ ]*' "$K" 2>/dev/null | head -1 | cut -d= -f2-)
@@ -1842,13 +1845,19 @@ jobs:
             done | sort -u)
             echo "Image=$IMG"
             echo "模块串去重:"; echo "$MODS" | sed 's/^/  /'
-            if [ -z "$IMG" ]; then echo "KO_VK_VERDICT: 读不到 Image 版本串，未证";
+            if [ -z "$MODS" ]; then echo "KO_VK_VERDICT: 本轮没有任何 .ko 产出，此项不适用（不是通过）";
+            elif [ -z "$IMG" ]; then echo "KO_VK_VERDICT: 读不到 Image 版本串，未证";
             elif echo "$MODS" | grep -qxF "$IMG"; then echo "KO_VK_VERDICT: 至少一个模块串与 Image 完全相同";
             else echo "KO_VK_VERDICT: 本轮自产 .ko 的 vermagic 与刷进去的 Image 不同 —— 自产 .ko 不能随包加载"; fi
             echo "=== 版本相关 KCONFIG ==="
             grep -aE '^CONFIG_LOCALVERSION|^CONFIG_KALLSYMS|^CONFIG_MODVERSIONS|^CONFIG_MODULE_FORCE_LOAD' \
               kernel_workspace/kernel_platform/common/.config 2>/dev/null || true
           } | tee vermagic-report.txt
+          # 这一段的输出走的是管道，退出码会被 tee 顶掉；上一轮就是被
+          # git describe 的失败在 bash -e 下当场掐掉，后面判定行一行没跑，步骤却显示 success。
+          grep -q 'KO_VK_VERDICT' vermagic-report.txt \
+            || { echo "::error::vermagic 报告半路断了，判定行没写出来（不当成通过）"; exit 1; }
+          echo "vermagic 报告完整：判定行已落盘"
 
       - name: Upload scheduler modules and vermagic report
         if: always()
