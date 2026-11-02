@@ -1083,7 +1083,8 @@ jobs:
           # SUSFS 特性面硬断（学 WildKernels 的做法：取不到版本就不许出包）
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             echo "=== SUSFS 版本与开关核对 ==="
-            SH=$(find kernel_workspace -type f -path "*susfs4ksu/kernel_patches/include/linux/susfs.h" 2>/dev/null | head -n 1)
+            SH=$(find "$GITHUB_WORKSPACE" -type f -path "*/susfs4ksu/kernel_patches/include/linux/susfs.h" 2>/dev/null | head -n 1)
+            [ -n "$SH" ] || SH=$(find "$GITHUB_WORKSPACE" -type f -name susfs.h 2>/dev/null | head -n 1)
             [ -n "$SH" ] || { echo "::error::找不到 susfs.h，无法确认 SUSFS 版本，拒绝继续"; exit 1; }
             SUSFS_VER=$(grep -m1 -oE 'define SUSFS_VERSION "[^"]+"' "$SH" | cut -d'"' -f2)
             [ -n "$SUSFS_VER" ] || { echo "::error::susfs.h 里没有 SUSFS_VERSION"; exit 1; }
@@ -1923,7 +1924,8 @@ jobs:
       - name: Report our exact vermagic
         if: always()
         run: |
-          set -o pipefail
+          # 不开 pipefail：块里多条管道带 head/sort，SIGPIPE 会把整步打成退出码 2；
+          # 真正的把关是末尾那句「判定行必须落盘」的 grep 断言。
           cd "$GITHUB_WORKSPACE"
           # 刷进去的内核与随包 .ko 都吃这条串；原厂 /vendor/lib/modules 期望的
           # 是手机 uname -r，两者必须逐字相同，否则原厂模块全部拒载。
@@ -1947,7 +1949,7 @@ jobs:
               [ -n "$V" ] && echo "$V"
             done | sort | uniq -c | sort -rn | head -10
             echo "=== 自报串与 Image 是否同一条（判定行）==="
-            IMG=$(grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | head -1 | cut -d' ' -f3)
+            IMG=$(grep -ao 'Linux version [^ ]*' "$GITHUB_WORKSPACE/AnyKernel3/Image" 2>/dev/null | head -1 | cut -d' ' -f3)
             MODS=$(for K in $(find kernel_workspace -type f -name '*.ko' 2>/dev/null | grep -v '/unstripped/' | head -80); do
               grep -ao 'vermagic=[^ ]*[^ ]*' "$K" 2>/dev/null | head -1 | cut -d= -f2-
             done | sort -u)
