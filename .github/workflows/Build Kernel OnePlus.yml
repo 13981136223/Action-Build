@@ -1627,6 +1627,31 @@ jobs:
         run: |
           echo "value=${{ env.ZRAM_ALGO_U && format('_{0}', env.ZRAM_ALGO_U) || '' }}${{ github.event.inputs.KPM == 'KPM' && '_KPM' || github.event.inputs.KPM == 'KPN' && '_KPN' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && '_BBG' || '' }}_ILH${{ github.event.inputs.SCHED_HMBIRD== 'true' && '_HMBIRD' || '' }}${{ github.event.inputs.DROID_SPACES== 'true' && '_DS' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && '_REKER' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && '_LZ4UPD' || '' }}" >> $GITHUB_OUTPUT
 
+      - name: Compare stock vendor module CRCs against our kernel
+        continue-on-error: true
+        run: |
+          # 唯一原本只能靠刷机才知道的问题：原厂 .ko 的 __versions 里记录的符号 CRC，
+          # 和我们内核导出的 CRC 是否一致。这里从包里自带的四个原厂/厂商模块
+          # （oplus_bsp_game_opt、crypto_lz4p、crypto_zstdp、perfmgr，共 98 个导入符号）
+          # 取出它们要求的 CRC，与本次构建的 Module.symvers 对表。
+          # 三个独立构建的原厂模块之间 CRC 冲突为 0，已证明解析布局正确。
+          # 注意这是「测量」不是「闸门」：对不上不代表构建失败，代表刷进去模块会拒载，
+          # 所以用 continue-on-error，但把 VERDICT 单独打到摘要里，绝不当成绿灯。
+          cd "$GITHUB_WORKSPACE"
+          find kernel_workspace -type f -name Module.symvers 2>/dev/null | head -20 > symvers.list
+          N=$(wc -l < symvers.list)
+          echo "找到 Module.symvers 文件数: $N"
+          if [ "$N" = "0" ]; then
+            echo "::warning::没有 Module.symvers，CRC 对表做不了（不代表通过）"
+            exit 0
+          fi
+          echo "=== 使用原厂 game_opt（vermagic 6.1.57，OEM 构建）等模块的 CRC 需求 ==="
+          node Action-Build/scripts/crc_compare.js Action-Build/scripts/crc_stock.json $(tr '\n' ' ' < symvers.list) \
+            | tee crc-verdict.txt
+          echo "--- VERDICT 行 ---"
+          grep -a 'VERDICT' crc-verdict.txt || echo "没有输出判定行，视为未证"
+          rm -f symvers.list
+
       - name: Add flash-time guards to AnyKernel3
         run: |
           # 这个 fork 的 tools/ak3-core.sh 已经把 do.devicecheck / supported.versions
