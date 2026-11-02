@@ -1881,6 +1881,7 @@ jobs:
           rm -f "$G" anykernel.sh.orig
 
       - name: Harden the bundled susfs module
+        if: always()
         run: |
           # 随包的 ksu_module_susfs 里 config.sh 才是隐藏总开关，而它的默认值有几项是关的：
           #   hide_loops=0 hide_vendor_sepolicy=0 hide_compat_matrix=0 hide_cusrom=0
@@ -1919,12 +1920,19 @@ jobs:
           echo "✅ 随包 susfs 模块已按极致隐藏配置重打包"
 
       - name: Bundle and auto-install modules at flash time
+        if: always()
         run: |
           # ZRAM 保持模块形态，但不再要求手工装：这里把它打进包内，并让刷写过程自动装。
           # 用的就是本包已有的可信路径 /data/adb/ksud module install（原逻辑要按音量键），
           # 不自己解包塞 /data/adb/modules，免得 SELinux 上下文出问题。
           set -e
           cd "$GITHUB_WORKSPACE/AnyKernel3"
+          # 这一步带 if: always()，更早的步骤失败时也会跑到这里。包里还没有闸门/取键段
+          # 就说明上游没走完，直接跳过 —— 别把"更早失败"报成本步骤失败而埋掉根因。
+          if ! grep -q 'getevent -qlc 1' anykernel.sh 2>/dev/null; then
+            echo "AUTOINSTALL_SKIP: 包里还没有取键段（闸门步骤未跑完），本轮不改自动装逻辑"
+            exit 0
+          fi
           if [ ! -d "$GITHUB_WORKSPACE/ZRAM-Module" ]; then
             echo "本轮没产出 ZRAM-Module（ZRAM 输入为 0），只装包内已有的模块"
           else
