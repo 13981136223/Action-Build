@@ -1257,6 +1257,47 @@ jobs:
           echo "=== 实际改动 ==="
           diff -u "$SRC.orig" "$SRC" | head -40
 
+      - name: Pin kernel version string to stock KMI
+        run: |
+          # 实机实测（2026-11-02，adb shell uname -r）：
+          #   原厂 UTS_RELEASE = 6.1.118-android14-11-o-g778e4490e346
+          #   /vendor/lib/modules 有 406 个 .ko，lsmod 599 行，CONFIG_MODVERSIONS=y，
+          #   原厂 /proc/config.gz 里没有 CONFIG_MODULE_FORCE_LOAD
+          # 我们构建出来的是 6.1.118-android14-1-o-ga377f5434b5eb1（比原厂少一位 KMI 代际、
+          # 且 git hash 不同）。vermagic 差一个字符，原厂那 406 个模块就全部拒载
+          # —— Wi-Fi、触控、以及 sched_walt / oplus_bsp_* 全套调度模块都起不来。
+          # 所以这里把版本串钉成原厂那条：清空 EXTRAVERSION，并把 setlocalversion
+          # 换成只输出固定尾巴（不再依赖 git describe，避免每次构建串都在变）。
+          set -e
+          TARGET="6.1.118-android14-11-o-g778e4490e346"
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          V=$(awk -F'= *' '/^VERSION/{print $2}' Makefile | head -1)
+          P=$(awk -F'= *' '/^PATCHLEVEL/{print $2}' Makefile | head -1)
+          S=$(awk -F'= *' '/^SUBLEVEL/{print $2}'    Makefile | head -1)
+          BASE="$V.$P.$S"
+          case "$TARGET" in
+            "$BASE"*) ;;
+            *) echo "::error::Makefile 版本基座是 $BASE，与目标串 $TARGET 不匹配，拒绝硬钉"
+               exit 1 ;;
+          esac
+          SUFFIX="${TARGET#"$BASE"}"
+          echo "基座=$BASE  尾巴=$SUFFIX"
+
+          cp Makefile Makefile.orig
+          sed -i 's/^EXTRAVERSION *=.*/EXTRAVERSION =/' Makefile
+          grep -q '^EXTRAVERSION =$' Makefile || { echo "::error::EXTRAVERSION 没清空"; exit 1; }
+
+          cp scripts/setlocalversion scripts/setlocalversion.orig
+          printf '#!/bin/sh\n# pinned by workflow: 原逻辑依赖 git describe，会让每次构建的串都变\nprintf "%s\\n" "%s"\n' "$SUFFIX" > scripts/setlocalversion
+          chmod +x scripts/setlocalversion
+          OUT="$(./scripts/setlocalversion .)"
+          echo "setlocalversion 输出: [$OUT]"
+          [ "$BASE$OUT" = "$TARGET" ] || {
+            echo "::error::钉串失败：$BASE$OUT != $TARGET"; exit 1; }
+          echo "✅ 版本串已钉死为原厂值：$TARGET（原厂模块的 vermagic 关卡过了）"
+          echo "⚠️ 仍未证的另一半：MODVERSIONS 的符号 CRC。串一致不代表 CRC 一致，"
+          echo "   若原厂 .ko 报 'disagrees about version of symbol' 则必须改用与原厂同代源码。"
+
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
