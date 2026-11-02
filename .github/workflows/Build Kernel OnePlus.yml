@@ -180,9 +180,14 @@ on:
         default: false
       HMBIRD_PATCH:
         type: string
-        description: "改 hmbird 调度源码的 sed 表达式（留空=不改）//sed -E expression applied to vendor/oplus/kernel/cpu/sched_ext/main.c"
+        description: "sed -E 表达式，应用于 PATCH_TARGET 指定的源码文件（留空=不改）//sed -E expression applied to PATCH_TARGET"
         required: false
         default: ""
+      PATCH_TARGET:
+        type: string
+        description: "改码目标路径片段（find -path 匹配）//path fragment for find -path"
+        required: false
+        default: "*vendor/oplus/kernel/cpu/sched_ext/main.c"
       MARK_PROOF:
         type: boolean
         description: "改码链路自检：给 common/Makefile 打版本标记并验证是否进入 Image//prove that in-scope source edits reach the Image"
@@ -1236,15 +1241,16 @@ jobs:
         if: ${{ github.event.inputs.HMBIRD_PATCH != '' }}
         env:
           PATCH_EXPR: ${{ github.event.inputs.HMBIRD_PATCH }}
+          PATCH_GLOB: ${{ github.event.inputs.PATCH_TARGET }}
         run: |
           set -e
           # sched_ext 属 modules_and_devicetree 仓库，manifest 里 path 是 "./"，
           # 不在 kernel_platform 下，所以从 kernel_workspace 整层找。
           cd kernel_workspace
-          SRC=$(find . -type f -path '*vendor/oplus/kernel/cpu/sched_ext/main.c' | head -n 1)
+          SRC=$(find . -type f -path "$PATCH_GLOB" | head -n 1)
           if [ -z "$SRC" ]; then
-            echo "::warning::未找到 vendor/oplus/kernel/cpu/sched_ext/main.c，跳过改码"
-            find . -maxdepth 3 -type d -name 'sched_ext' 2>/dev/null | head -5
+            echo "::warning::未找到匹配 $PATCH_GLOB 的源文件，跳过改码"
+            find . -maxdepth 6 -type d -name 'sched_ext' 2>/dev/null | head -5
             exit 0
           fi
           echo "改码目标: $SRC"
