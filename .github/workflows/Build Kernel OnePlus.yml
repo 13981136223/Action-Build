@@ -1775,6 +1775,52 @@ jobs:
           sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
           rm -f "$G" anykernel.sh.orig
 
+      - name: Bundle and auto-install modules at flash time
+        run: |
+          # ZRAM 保持模块形态，但不再要求手工装：这里把它打进包内，并让刷写过程自动装。
+          # 用的就是本包已有的可信路径 /data/adb/ksud module install（原逻辑要按音量键），
+          # 不自己解包塞 /data/adb/modules，免得 SELinux 上下文出问题。
+          set -e
+          cd "$GITHUB_WORKSPACE/AnyKernel3"
+          if [ ! -d "$GITHUB_WORKSPACE/ZRAM-Module" ]; then
+            echo "本轮没产出 ZRAM-Module（ZRAM 输入为 0），只装包内已有的模块"
+          else
+            python3 -c "import zipfile,os;src=os.path.join(os.environ['GITHUB_WORKSPACE'],'ZRAM-Module');z=zipfile.ZipFile('ZRAM-Module.zip','w',zipfile.ZIP_STORED);[z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f),src)) for r,d,fs in os.walk(src) for f in fs];z.close()"
+            python3 -c "import zipfile,sys;i=zipfile.ZipFile('ZRAM-Module.zip').getinfo('META-INF/com/google/android/update-binary');m=(i.external_attr>>16)&0o777;print('update-binary 权限=%o'%m);sys.exit(0 if m&0o111 else 1)" \
+              || { echo "::error::打出来的 ZRAM 模块包 update-binary 没有执行位，装了也会失败"; exit 1; }
+            echo "ZRAM 模块已打进包: $(wc -c < ZRAM-Module.zip) 字节"
+          fi
+          # 原 susfs 那块是音量键选的，把取键那一行换成默认安装（存在 SKIP_MODULE_INSTALL 则跳过），
+          # 只改这一行，后面 case 的既有代码原样复用。
+          grep -q 'getevent -qlc 1' anykernel.sh || { echo "::error::找不到取键行，上游结构变了，拒绝继续"; exit 1; }
+          # 包里有两处取键：前一处是"要不要继续刷"，后一处是"要不要装 susfs 模块"。
+          # 分隔符用 # 不用 |（替换里有 ||），&& 要转义成 &&，否则 & 被当成"整段匹配"。
+          sed -i '0,/getevent/s#key_click=.*getevent.*#key_click=KEY_VOLUMEDOWN#' anykernel.sh
+          sed -i 's#key_click=.*getevent.*#key_click=$( [ -f ./SKIP_MODULE_INSTALL ] && echo KEY_VOLUMEUP || echo KEY_VOLUMEDOWN )#' anykernel.sh
+          # 再把包内其余模块 zip 用同一条 ksud 路径自动装（susfs 已由上面那块处理，这里排除，避免装两遍）
+          grep -q 'bundled module auto-install' anykernel.sh || {
+            echo '# ---- bundled module auto-install, injected by the workflow ----' >> anykernel.sh
+            echo 'KSUD_PATH="/data/adb/ksud"' >> anykernel.sh
+            echo 'AUTO_N=0' >> anykernel.sh
+            echo 'if [ -f ./SKIP_MODULE_INSTALL ]; then' >> anykernel.sh
+            echo '  ui_print "检测到 SKIP_MODULE_INSTALL，模块自动安装已关闭"' >> anykernel.sh
+            echo 'elif [ ! -f "$KSUD_PATH" ]; then' >> anykernel.sh
+            echo '  ui_print "没找到 /data/adb/ksud（还没装 KernelSU？），跳过模块自动安装"' >> anykernel.sh
+            echo 'else' >> anykernel.sh
+            echo '  for M in "$AKHOME"/*.zip; do' >> anykernel.sh
+            echo '    [ -f "$M" ] || continue' >> anykernel.sh
+            echo '    case "$(basename "$M")" in ksu_module_susfs*) continue ;; esac' >> anykernel.sh
+            echo '    ui_print "自动安装模块: $(basename "$M")"' >> anykernel.sh
+            echo '    if "$KSUD_PATH" module install "$M"; then AUTO_N=$((AUTO_N+1)); else ui_print "安装失败: $(basename "$M")"; fi' >> anykernel.sh
+            echo '  done' >> anykernel.sh
+            echo '  ui_print "模块自动安装完成，共 $AUTO_N 个"' >> anykernel.sh
+            echo 'fi' >> anykernel.sh
+          }
+          sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
+          grep -q 'bundled module auto-install' anykernel.sh || { echo "::error::自动安装段没写进去"; exit 1; }
+          grep -q 'KEY_VOLUMEDOWN )' anykernel.sh || { echo "::error::取键行没被改成默认安装"; exit 1; }
+          echo "自动安装段与默认安装改动都已落盘"
+
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
         with:
