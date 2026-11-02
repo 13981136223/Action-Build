@@ -1818,6 +1818,44 @@ jobs:
           sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
           rm -f "$G" anykernel.sh.orig
 
+      - name: Harden the bundled susfs module
+        run: |
+          # 随包的 ksu_module_susfs 里 config.sh 才是隐藏总开关，而它的默认值有几项是关的：
+          #   hide_loops=0 hide_vendor_sepolicy=0 hide_compat_matrix=0 hide_cusrom=0
+          #   kernel_version='default' kernel_build='default' susfs_log=1
+          # 这里在打包前就把它们改成激进值，模块装完即生效 —— 不用额外模块、不赌启动顺序。
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          M=$(find . -maxdepth 3 -type f -name 'ksu_module_susfs_*.zip' | head -n 1)
+          if [ -z "$M" ]; then echo "本轮没有随包 susfs 模块（SUSFS_CI=N/A），跳过"; exit 0; fi
+          echo "要改的模块包: $M"
+          rm -rf susmod && mkdir susmod
+          unzip -q "$M" -d susmod
+          C=$(find susmod -maxdepth 2 -type f -name config.sh | head -n 1)
+          [ -n "$C" ] || { echo "::error::模块里没有 config.sh，无法核对隐藏开关"; exit 1; }
+          echo "=== 改前 ==="; grep -E '^(hide_loops|hide_vendor_sepolicy|hide_compat_matrix|hide_cusrom|susfs_log|kernel_version|kernel_build)=' "$C"
+          REL=$(grep -ao 'Linux version [^ ]*' AnyKernel3/Image 2>/dev/null | head -1 | cut -d' ' -f3)
+          [ -n "$REL" ] || { echo "::error::读不到包内 Image 的版本串，伪装值没法填"; exit 1; }
+          BLD="#1 SMP PREEMPT ${BUILD_TIME:-$(date -u '+%a %b %e %H:%M:%S UTC %Y')}"
+          for K in hide_loops hide_vendor_sepolicy hide_compat_matrix hide_cusrom; do
+            sed -i -E "s|^$K=.*|$K=1|" "$C"
+          done
+          sed -i -E 's|^susfs_log=.*|susfs_log=0|' "$C"
+          sed -i -E "s|^kernel_version=.*|kernel_version='$REL'|" "$C"
+          sed -i -E "s|^kernel_build=.*|kernel_build='$BLD'|" "$C"
+          echo "=== 改后 ==="; grep -E '^(hide_loops|hide_vendor_sepolicy|hide_compat_matrix|hide_cusrom|susfs_log|kernel_version|kernel_build)=' "$C"
+          for K in hide_loops hide_vendor_sepolicy hide_compat_matrix hide_cusrom; do
+            grep -qE "^$K=1$" "$C" || { echo "::error::$K 没改成 1，隐藏开关未生效"; exit 1; }
+          done
+          grep -qE "^kernel_version='$REL'$" "$C" || { echo "::error::kernel_version 伪装值没写进去"; exit 1; }
+          echo "kernel_version=$REL  kernel_build=$BLD"
+          cd susmod
+          python3 -c "import zipfile,os;z=zipfile.ZipFile(os.path.abspath('../mod.zip'),'w',zipfile.ZIP_DEFLATED);[z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f))) for r,d,fs_ in os.walk('.') for f in fs_];z.close()"
+          cd .. && mv -f mod.zip "$M"
+          python3 -c "import zipfile,sys;a=zipfile.ZipFile('$M'.replace(chr(92),'/'));n=[x for x in a.namelist() if x.endswith('config.sh')][0];t=a.read(n).decode('utf-8','replace');sys.exit(0 if 'hide_loops=1' in t and 'hide_cusrom=1' in t else 1)" \
+            || { echo "::error::重打包后的模块里隐藏开关不在"; exit 1; }
+          echo "✅ 随包 susfs 模块已按极致隐藏配置重打包"
+
       - name: Bundle and auto-install modules at flash time
         run: |
           # ZRAM 保持模块形态，但不再要求手工装：这里把它打进包内，并让刷写过程自动装。
