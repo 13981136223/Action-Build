@@ -1712,35 +1712,55 @@ jobs:
             echo "::error::读不到 Image 的版本串，拒绝在不加闸门的情况下出包"
             exit 1
           fi
-          echo "本包内核串（闸门要求手机 uname -r 与此逐字相同）: $EXPECTED"
+          echo "本包内核串（闸门只核 6.1 前缀；机型/SOC/安卓三项必查）: $EXPECTED"
           cp anykernel.sh anykernel.sh.orig
           G=guard.sh
           : > "$G"
           echo '# ---- flash-time guard, injected by the workflow ----' >> "$G"
+          echo 'ui_print "=== 本包维护/构建：汐颜 ==="' >> "$G"
           echo 'EXPECTED_UTS="'"$EXPECTED"'"' >> "$G"
           echo 'CUR_UTS=$(uname -r)' >> "$G"
           echo 'ui_print "expected kernel: $EXPECTED_UTS"' >> "$G"
           echo 'ui_print "current  kernel: $CUR_UTS"' >> "$G"
+          # 版本号按你的要求只核 6.1 前缀，后面的 KMI 代际/git hash 一律放行，只打印不拦。
           echo 'BYPASS=""' >> "$G"
-          echo 'for b in ./IGNORE_UTS_CHECK /sdcard/IGNORE_UTS_CHECK /tmp/IGNORE_UTS_CHECK; do' >> "$G"
-          echo '  if [ -f "$b" ]; then BYPASS=1; ui_print "found bypass: $b"; fi' >> "$G"
+          echo 'for b in ./IGNORE_ACE5_CHECK /sdcard/IGNORE_ACE5_CHECK /tmp/IGNORE_ACE5_CHECK; do' >> "$G"
+          echo '  if [ -f "$b" ]; then BYPASS=1; ui_print "发现旁路文件: $b"; fi' >> "$G"
           echo 'done' >> "$G"
-          echo 'if [ "$CUR_UTS" != "$EXPECTED_UTS" ] && [ -z "$BYPASS" ]; then' >> "$G"
-          echo '  ui_print "KERNEL STRING MISMATCH - stock vendor modules would not load"' >> "$G"
-          echo '  ui_print "Put a file named IGNORE_UTS_CHECK beside anykernel.sh to override"' >> "$G"
-          echo '  abort "aborted by kernel version guard"' >> "$G"
-          echo 'fi' >> "$G"
-          echo 'if command -v getprop >/dev/null 2>&1; then' >> "$G"
-          echo '  DEVLIST="$(getprop ro.product.device)$(getprop ro.product.vendor.device)"' >> "$G"
-          echo 'else' >> "$G"
-          echo '  DEVLIST=""' >> "$G"
-          echo 'fi' >> "$G"
-          echo 'ui_print "device: [$DEVLIST]"' >> "$G"
-          echo 'case "$DEVLIST" in' >> "$G"
-          echo '  *OP5D2BL1*|*PKG110*) : ;;' >> "$G"
-          echo '  "") ui_print "getprop unavailable/empty - skip device check (kernel string gate still enforced)" ;;' >> "$G"
-          echo '  *) if [ -z "$BYPASS" ]; then abort "not OnePlus Ace5 (OP5D2BL1/PKG110)"; fi ;;' >> "$G"
+          echo 'case "$CUR_UTS" in' >> "$G"
+          echo '  6.1.*) : ;;' >> "$G"
+          echo '  *) if [ -z "$BYPASS" ]; then ui_print "kernel is not 6.1.x - refusing"; ui_print "要强行继续：在本包 anykernel.sh 旁放一个空文件 IGNORE_ACE5_CHECK"; abort "aborted by kernel line guard"; fi ;;' >> "$G"
           echo 'esac' >> "$G"
+          echo 'if [ "${CUR_UTS#6.1.118-android14-11-o-g778e4490e346}" != "" ]; then' >> "$G"
+          echo '  ui_print "提示：与原厂完整串不同（只核 6.1，已放行），原厂模块 vermagic 可能仍不合"' >> "$G"
+          echo 'fi' >> "$G"
+          # 机型/SOC/安卓三项：任一不符就拦；读不到 getprop 也算不符（宁可拦住）
+          echo 'GP=1; command -v getprop >/dev/null 2>&1 || GP=0' >> "$G"
+          echo 'DEV=""; SOC=""; AND=""' >> "$G"
+          echo 'if [ "$GP" = "1" ]; then' >> "$G"
+          echo '  DEV="$(getprop ro.product.device)$(getprop ro.product.vendor.device)"' >> "$G"
+          echo '  SOC="$(getprop ro.soc.model)$(getprop ro.hardware)"' >> "$G"
+          echo '  AND="$(getprop ro.build.version.release)"' >> "$G"
+          echo 'fi' >> "$G"
+          echo 'ui_print "device: [$DEV]  soc: [$SOC]  android: [$AND]"' >> "$G"
+          echo 'BAD=""' >> "$G"
+          echo 'if [ "$GP" != "1" ]; then BAD="getprop 不可用(可能是 recovery 缺 system)";' >> "$G"
+          echo 'else' >> "$G"
+          echo '  case "$DEV" in *OP5D2BL1*|*PKG110*) : ;; *) BAD="机型不是 Ace5(OP5D2BL1/PKG110)" ;; esac' >> "$G"
+          echo '  case "$SOC" in *SM8650*|*pineapple*|*qcom*) : ;; *) [ -z "$BAD" ] && BAD="SoC 不是骁龙8Gen3(SM8650)" ;; esac' >> "$G"
+          echo '  case "$AND" in 15*) : ;; *) [ -z "$BAD" ] && BAD="安卓不是 15" ;; esac' >> "$G"
+          echo 'fi' >> "$G"
+          echo 'if [ -n "$BAD" ]; then' >> "$G"
+          echo '  ui_print "设备检查未通过: $BAD"' >> "$G"
+          echo '  ui_print "⚠ 继续刷入有可能变砖（boot 分区被换成本机不适用的内核）"' >> "$G"
+          echo '  ui_print "⚠ 确认你能救（9008/深度烧机/fastboot 刷回原厂 boot）再决定"' >> "$G"
+          echo '  if [ -z "$BYPASS" ]; then' >> "$G"
+          echo '    ui_print "已中止。要强行继续：放一个空文件 IGNORE_ACE5_CHECK 到本包根目录再重刷"' >> "$G"
+          echo '    abort "aborted by Ace5 device guard"' >> "$G"
+          echo '  else' >> "$G"
+          echo '    ui_print "检测到旁路文件，风险自负，继续写入 boot"' >> "$G"
+          echo '  fi' >> "$G"
+          echo 'fi' >> "$G"
           echo '' >> "$G"
           awk 'BEGIN{while((getline l < "guard.sh")>0) g=g l ORS}
                /^split_boot$/ && !done {printf "%s", g; done=1}
@@ -1749,7 +1769,7 @@ jobs:
             echo "::error::插入没有产生任何改动，拒绝输出未加闸门的包"
             exit 1
           fi
-          grep -q 'aborted by kernel version guard' anykernel.sh.new || { echo "::error::闸门文本不在新脚本里"; exit 1; }
+          grep -q 'aborted by Ace5 device guard' anykernel.sh.new || { echo "::error::闸门文本不在新脚本里"; exit 1; }
           mv anykernel.sh.new anykernel.sh
           chmod +x anykernel.sh
           sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
