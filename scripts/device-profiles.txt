@@ -1,0 +1,17 @@
+# 机型档案表：闸门与钉串用的每台机型参数
+#   格式  FILE|原厂 uname -r|闸门机型白名单（空格分隔）
+#   - 第 2 列留空 = 不钉版本串（闸门仍只放行本机 KMI 前缀的内核）。
+#     钉串必须是"这台机器现在 uname -r 的那一条"，填错会让原厂 406 个模块集体拒载，
+#     所以宁可不填，也不要猜一个。取值方法：在手机上执行 uname -r 后原样填进来。
+#   - 第 3 列留空 = 不做机型名白名单，只按 SoC（来自 CPU 输入）和安卓大版本拦。
+#   - 表里没有这行 = 两列都空，等同于最保守的"SoC + 安卓 + KMI 前缀"三重检查。
+#   - 原厂构建时间串（uname -v 里那段）由 BUILD_TIME 输入控制，不在这张表里。
+oneplus_ace5|6.1.118-android14-11-o-g778e4490e346|OP5D2BL1 PKG110
+oneplus_ace5_b|6.1.118-android14-11-o-g778e4490e346|OP5D2BL1 PKG110
+oneplus_ace5||
+oneplus_13||
+oneplus_13s||
+oneplus_13t||
+oneplus_pad_3||
+oneplus_ace3_pro||
+oneplus_pad_pro||
