@@ -1288,8 +1288,17 @@ jobs:
           grep -q '^EXTRAVERSION =$' Makefile || { echo "::error::EXTRAVERSION 没清空"; exit 1; }
 
           cp scripts/setlocalversion scripts/setlocalversion.orig
-          printf '#!/bin/sh\n# pinned by workflow: 原逻辑依赖 git describe，会让每次构建的串都变\nprintf "%s\\n" "%s"\n' "$SUFFIX" > scripts/setlocalversion
+          # 用 heredoc，不用外层 printf：上一版把 'printf "...%s..." "$SUFFIX"' 当生成器，
+          # 文件内容里的 %s 被外层 printf 当格式吃掉，生成的脚本成了 printf "-android…"，
+          # dash 直接报 Illegal option -a（run 41396320984 就是这么被硬断言拦下的）。
+          cat > scripts/setlocalversion <<EOF
+#!/bin/sh
+# pinned by workflow：原逻辑依赖 git describe，会让每次构建的串都变
+printf '%s\\n' '$SUFFIX'
+EOF
           chmod +x scripts/setlocalversion
+          echo "--- 生成的 setlocalversion 内容 ---"
+          cat -A scripts/setlocalversion | sed -n '1,4p'
           OUT="$(./scripts/setlocalversion .)"
           echo "setlocalversion 输出: [$OUT]"
           [ "$BASE$OUT" = "$TARGET" ] || {
