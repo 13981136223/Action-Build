@@ -1072,8 +1072,29 @@ jobs:
             set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
+            # v2.3.0 共 11 个 KSU_SUSFS_* 开关，前两轮我们只开了 10 个，漏的就是下面这条：
+            # 后果实测过 —— 交付 Image 里 susfs_* 符号从 95 掉到 84，
+            # susfs_set_priority_uid_filter / susfs_parse_priority_app_strings 直接没编进去。
+            set_config "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y"
           else
             set_config "CONFIG_KSU_SUSFS=n"
+          fi
+
+          # SUSFS 特性面硬断（学 WildKernels 的做法：取不到版本就不许出包）
+          if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
+            echo "=== SUSFS 版本与开关核对 ==="
+            SH=$(find kernel_workspace -type f -path "*susfs4ksu/kernel_patches/include/linux/susfs.h" 2>/dev/null | head -n 1)
+            [ -n "$SH" ] || { echo "::error::找不到 susfs.h，无法确认 SUSFS 版本，拒绝继续"; exit 1; }
+            SUSFS_VER=$(grep -m1 -oE 'define SUSFS_VERSION "[^"]+"' "$SH" | sed -E 's/.*"([^"]+)".*//')
+            [ -n "$SUSFS_VER" ] || { echo "::error::susfs.h 里没有 SUSFS_VERSION"; exit 1; }
+            echo "SUSFS_VERSION=$SUSFS_VER  来源分支: gki-$KMI"
+            MISSING=""
+            for K in CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER; do
+              grep -qF "$K=y" "$CONFIG_FILE" || MISSING="$MISSING $K"
+            done
+            [ -z "$MISSING" ] || { echo "::error::以下 SUSFS 开关没打开：$MISSING"; exit 1; }
+            echo "11/11 SUSFS 开关全部 =y"
+            echo "SUSFS_VER=$SUSFS_VER" >> "$GITHUB_ENV"
           fi
 
           # TMPFS配置*
@@ -1696,6 +1717,27 @@ jobs:
           echo "--- VERDICT 行 ---"
           grep -a 'VERDICT' crc-verdict.txt || { echo "::error::CRC 对表没输出判定行，视为未证"; exit 1; }
           rm -f symvers.list
+
+      - name: Verify SUSFS symbols made it into the Image
+        if: github.event.inputs.SUSFS_META != '-1'
+        run: |
+          # 配置里写了 =y 不代表真编进内核（可能被 select 掉、可能上游改了名字），
+          # 所以直接查产物里的符号名。
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          IMG=$(find . kernel_workspace -maxdepth 4 -type f -name Image 2>/dev/null | head -n 1)
+          [ -n "$IMG" ] || { echo "::error::找不到 Image 产物"; exit 1; }
+          echo "检查 $IMG 里的 SUSFS 符号面（版本 $SUSFS_VER）"
+          REQ="susfs_init susfs_add_sus_path susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_hide_sus_mnts_for_non_su_procs susfs_enable_log"
+          REQ="$REQ susfs_set_priority_uid_filter susfs_parse_priority_app_strings"
+          MISS=""
+          for S in $REQ; do
+            grep -aq "$S" "$IMG" || MISS="$MISS $S"
+          done
+          CNT=$(grep -ao "susfs_[a-z0-9_]*" "$IMG" | sort -u | wc -l)
+          echo "Image 里去重后的 susfs_* 符号数: $CNT"
+          [ -z "$MISS" ] || { echo "::error::产物里缺少这些 SUSFS 符号，说明特性没编进去：$MISS"; exit 1; }
+          echo "✅ 全部必需 SUSFS 符号都在产物里（$CNT 个 susfs_* 符号）"
 
       - name: Add flash-time guards to AnyKernel3
         run: |
