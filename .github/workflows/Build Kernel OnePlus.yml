@@ -188,16 +188,6 @@ on:
         description: "改码目标路径片段（find -path 匹配）//path fragment for find -path"
         required: false
         default: "*vendor/oplus/kernel/cpu/sched_ext/main.c"
-      MARK_PROOF:
-        type: boolean
-        description: "改码链路自检：给 common/Makefile 打版本标记并验证是否进入 Image//prove that in-scope source edits reach the Image"
-        required: false
-        default: false
-      FORCE_DTFLIP:
-        type: boolean
-        description: "在 6.1 上强制启用 hmbird 设备树 OGKI→GKI 翻转（上游仅对 6.6+ 验证过，属实验）//force hmbird DT flip on 6.1, upstream only validated 6.6+"
-        required: false
-        default: false
 
 jobs:
   build:
