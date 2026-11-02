@@ -1257,6 +1257,33 @@ jobs:
           echo "=== 实际改动 ==="
           diff -u "$SRC.orig" "$SRC" | head -40
 
+      - name: Let unused SUSFS helpers compile
+        run: |
+          # 全量档（非 FAST）实测倒在 fs/susfs.o：
+          #   error: unused function 'susfs_switch_to_ksu_domain' [-Werror,-Wunused-function]
+          #   error: unused function 'susfs_restore_creds'        [-Werror,-Wunused-function]
+          # 原因是配对：SUSFS 用最新版，而 SukiSU 为配对钉在 ce75122b。
+          # 这两个 helper 是给更新版 SukiSU 调用的，钉住旧版后它们在本内核里确实没人调，
+          # CONFIG_WERROR 把这条纯风格警告升级成编译失败。
+          # 只对 fs/susfs.o 这一条警告降级：不关全局 WERROR，不删代码，
+          # 其它文件、其它警告照旧硬断。
+          set -e
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          [ -f fs/susfs.c ] || { echo "::error::找不到 fs/susfs.c，SUSFS 没进来？"; exit 1; }
+          if grep -q 'Wno-error=unused-function' fs/Makefile; then
+            echo "fs/Makefile 已降级过，跳过（幂等）"
+          else
+            printf '\nCFLAGS_susfs.o += -Wno-error=unused-function\n' >> fs/Makefile
+          fi
+          grep -q 'CFLAGS_susfs.o' fs/Makefile || { echo "::error::没写进 fs/Makefile"; exit 1; }
+          echo "--- fs/Makefile 末尾 ---"
+          tail -3 fs/Makefile
+          echo "--- 本轮这两个函数的调用点（0 次才符合预期）---"
+          for F in susfs_switch_to_ksu_domain susfs_restore_creds; do
+            C=$(grep -c "$F" fs/susfs.c)
+            echo "$F 在 fs/susfs.c 出现 $C 次（定义+声明，无调用方即为死代码）"
+          done
+
       - name: Pin kernel version string to stock KMI
         run: |
           # 实机实测（2026-11-02，adb shell uname -r）：
