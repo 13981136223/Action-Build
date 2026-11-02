@@ -8,6 +8,21 @@ on:
         required: true
         default: oneplus_ace5
         options:
+          - oneplus_13
+          - oneplus_13_global
+          - oneplus_13s
+          - oneplus_13t
+          - oneplus_ace5_pro
+          - oneplus_pad_2_pro
+          - oneplus_pad_3
+          - oneplus_12_u
+          - oneplus_12_v
+          - oneplus_13r
+          - oneplus_ace3_pro
+          - oneplus_ace3_pro_v
+          - oneplus_pad2_v
+          - oneplus_pad_pro
+          - oneplus_pad_pro_v
           - oneplus_nord_n30_se_5g_v
           - oneplus_10r_v
           - oneplus_nord_3_b
@@ -183,6 +198,16 @@ on:
         description: "sed -E 表达式，应用于 PATCH_TARGET 指定的源码文件（留空=不改）//sed -E expression applied to PATCH_TARGET"
         required: false
         default: ""
+      STOCK_UTS:
+        description: "原厂 uname -r（钉版本串用；留空=不钉，闸门只按本机 KMI 前缀拦错线内核）"
+        required: false
+        type: string
+        default: 6.1.118-android14-11-o-g778e4490e346
+      GUARD_DEVICES:
+        description: "闸门机型白名单，空格分隔（例：OP5D2BL1 PKG110）"
+        required: false
+        type: string
+        default: "OP5D2BL1 PKG110"
       PATCH_TARGET:
         type: string
         description: "改码目标路径片段（find -path 匹配）//path fragment for find -path"
@@ -981,7 +1006,12 @@ jobs:
               exit 0
             }
           done
-          git clone https://github.com/Numbersf/SCHED_PATCH.git -b $CPU || { echo "❌ CPU 分支不存在，风驰内核暂未支持你的机型，请关闭后重试"; exit 11; }
+          # 风驰上游只开了 mt6991/sm8735/sm8750 三个分支，机型补丁也只有对应那批文件。
+          # 以前不支持就 exit 11/12 把整条构建打死，现在改成明确跳过并打判定行。
+          if ! git clone -q https://github.com/Numbersf/SCHED_PATCH.git -b "$CPU" 2>/dev/null; then
+            echo "FENGCHI_SKIP: SCHED_PATCH 没有 $CPU 分支（现存 mt6991/sm8735/sm8750），本轮不带风驰继续构建"
+            exit 0
+          fi
           echo "正在拉取风驰补丁"
           cp ./SCHED_PATCH/fengchi_${CLEAN_FILE}.patch ./
           if [[ -f "fengchi_${CLEAN_FILE}.patch" ]]; then
@@ -992,8 +1022,8 @@ jobs:
             source $REJ_CHECKER
             check_rejects .
           else
-            echo "❌ 未匹配到补丁，风驰内核暂未支持你的机型，请关闭后重试"
-            exit 12
+            echo "FENGCHI_SKIP: 没有 fengchi_${CLEAN_FILE}.patch，本机未适配风驰，继续构建不带风驰"
+            exit 0
           fi
 
       - name: Apply LSM_BBG
@@ -1318,7 +1348,12 @@ jobs:
           # 所以这里把版本串钉成原厂那条：清空 EXTRAVERSION，并把 setlocalversion
           # 换成只输出固定尾巴（不再依赖 git describe，避免每次构建串都在变）。
           set -e
-          TARGET="6.1.118-android14-11-o-g778e4490e346"
+          TARGET="${{ github.event.inputs.STOCK_UTS }}"
+          # 别的机型没有已知的原厂串时留空：不钉串，闸门仍会按本机 KMI 前缀拦住错线内核。
+          if [ -z "$TARGET" ]; then
+            echo "::warning::STOCK_UTS 为空 —— 本机原厂 uname -r 未知，跳过钉串（闸门按 $KERNEL_VERSION 前缀拦）"
+            exit 0
+          fi
           cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
           V=$(awk -F'= *' '/^VERSION/{print $2}' Makefile | head -1)
           P=$(awk -F'= *' '/^PATCHLEVEL/{print $2}' Makefile | head -1)
@@ -1759,6 +1794,14 @@ jobs:
           cp anykernel.sh anykernel.sh.orig
           G=guard.sh
           : > "$G"
+          # 闸门期望值全部由本次构建的机型/SoC/KMI 推导，不再写死 Ace5 ——
+          # 否则给 oneplus_13 出的包会拿 Ace5 的白名单去拦，或者反过来放行错的机器。
+          CPU_UC=$(echo "$CPU" | tr 'a-z' 'A-Z')
+          DEV_PAT=$(echo "${{ github.event.inputs.GUARD_DEVICES }}" | tr ' ' '\n' | grep -v '^$' | sed 's/^/*/; s/$/*/' | paste -sd'|' -)
+          [ -n "$DEV_PAT" ] || DEV_PAT='*'
+          SOC_PAT="*$CPU_UC*|*$CPUD*|*qcom*"
+          AND_PAT="$ANDROID_SHORT_VERSION*"
+          echo "闸门期望：机型[$DEV_PAT] SoC[$SOC_PAT] 安卓[$AND_PAT] 内核前缀[$KERNEL_VERSION.]"
           echo '# ---- flash-time guard, injected by the workflow ----' >> "$G"
           echo 'ui_print "=== 本包维护/构建：汐颜 ==="' >> "$G"
           echo 'EXPECTED_UTS="'"$EXPECTED"'"' >> "$G"
@@ -1771,10 +1814,10 @@ jobs:
           echo '  if [ -f "$b" ]; then BYPASS=1; ui_print "发现旁路文件: $b"; fi' >> "$G"
           echo 'done' >> "$G"
           echo 'case "$CUR_UTS" in' >> "$G"
-          echo '  6.1.*) : ;;' >> "$G"
+          echo '  '"$KERNEL_VERSION"'.*) : ;;' >> "$G"
           echo '  *) if [ -z "$BYPASS" ]; then ui_print "kernel is not 6.1.x - refusing"; ui_print "要强行继续：在本包 anykernel.sh 旁放一个空文件 IGNORE_ACE5_CHECK"; abort "aborted by kernel line guard"; fi ;;' >> "$G"
           echo 'esac' >> "$G"
-          echo 'if [ "${CUR_UTS#6.1.118-android14-11-o-g778e4490e346}" != "" ]; then' >> "$G"
+          echo 'if [ -n "$EXPECTED_UTS" ] && [ "$CUR_UTS" != "$EXPECTED_UTS" ]; then' >> "$G"
           echo '  ui_print "提示：与原厂完整串不同（只核 6.1，已放行），原厂模块 vermagic 可能仍不合"' >> "$G"
           echo 'fi' >> "$G"
           # 机型/SOC/安卓三项：任一不符就拦；读不到 getprop 也算不符（宁可拦住）
@@ -1789,9 +1832,9 @@ jobs:
           echo 'BAD=""' >> "$G"
           echo 'if [ "$GP" != "1" ]; then BAD="getprop 不可用(可能是 recovery 缺 system)";' >> "$G"
           echo 'else' >> "$G"
-          echo '  case "$DEV" in *OP5D2BL1*|*PKG110*) : ;; *) BAD="机型不是 Ace5(OP5D2BL1/PKG110)" ;; esac' >> "$G"
-          echo '  case "$SOC" in *SM8650*|*pineapple*|*qcom*) : ;; *) [ -z "$BAD" ] && BAD="SoC 不是骁龙8Gen3(SM8650)" ;; esac' >> "$G"
-          echo '  case "$AND" in 15*) : ;; *) [ -z "$BAD" ] && BAD="安卓不是 15" ;; esac' >> "$G"
+          echo '  case "$DEV" in '"$DEV_PAT"') : ;; *) BAD="机型不在白名单" ;; esac' >> "$G"
+          echo '  case "$SOC" in '"$SOC_PAT"') : ;; *) [ -z "$BAD" ] && BAD="SoC 与构建目标不符" ;; esac' >> "$G"
+          echo '  case "$AND" in '"$AND_PAT"') : ;; *) [ -z "$BAD" ] && BAD="安卓版本与构建目标不符" ;; esac' >> "$G"
           echo 'fi' >> "$G"
           echo 'if [ -n "$BAD" ]; then' >> "$G"
           echo '  ui_print "设备检查未通过: $BAD"' >> "$G"
