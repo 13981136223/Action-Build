@@ -2149,7 +2149,16 @@ jobs:
           CPU_UC=$(echo "$CPU" | tr 'a-z' 'A-Z')
           DEV_PAT=$(echo "${{ env.GUARD_DEVICES }}" | tr ' ' '\n' | grep -v '^$' | sed 's/^/*/; s/$/*/' | paste -sd'|' -)
           [ -n "$DEV_PAT" ] || DEV_PAT='*'
-          SOC_PAT="*$CPU_UC*|*$CPUD*|*qcom*"
+          # SoC 匹配串要能吃下 MTK 机的读法：ro.soc.model 常是营销名（Dimensity 9400），
+          # ro.hardware 才是 mt6991/mediatek 这种小写 token，只列 *qcom* 会误拦 17 台 MTK。
+          # 但厂商 token 必须**跟着目标走**：把 *qcom* 无条件留着，高通机刷 MTK 包
+          # 就会被 SoC 这一项放行（反向测实测到了），那正是闸门最该拦的一种错刷。
+          CPU_LC=$(echo "$CPU" | tr 'A-Z' 'a-z')
+          case "$CPU" in
+            mt*) SOC_VEND='*mediatek*|*mtk*' ;;
+            *)   SOC_VEND='*qcom*|*snapdragon*' ;;
+          esac
+          SOC_PAT="*$CPU_UC*|*$CPUD*|*$CPU_LC*|$SOC_VEND"
           AND_PAT="$ANDROID_SHORT_VERSION*"
           echo "闸门期望：机型[$DEV_PAT] SoC[$SOC_PAT] 安卓[$AND_PAT] 内核前缀[$KERNEL_VERSION.]"
           echo '# ---- flash-time guard, injected by the workflow ----' >> "$G"
