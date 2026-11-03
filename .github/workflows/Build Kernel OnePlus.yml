@@ -82,12 +82,15 @@ on:
           - oneplus_pad_3_pro
           - oneplus_pad_4
           - oneplus_ace6_ultra
-          # 下面三条是 device_matrix.js 对着 OnePlusOSS/kernel_manifest 全量比对后补的缺口：
-          # 前两条是第三方 ROM 变体（XML 文件名自带 JiuGeFaCai_ 前缀，查找按精确文件名，
-          # 所以选项必须连着前缀一起写），第三条是 Nord 5 出厂版（_b 早就有，裸名一直缺）。
-          - oneplus_nord_5
+          # 下面几行是拿 device_matrix.js 对着 OnePlusOSS/kernel_manifest 全分支比对后补的缺口。
+          # 两条 JiuGeFaCai_ 的是第三方 ROM 变体：XML 文件名就带这个前缀，而 workflow 是按
+          # raw.githubusercontent.com/.../${FILE}.xml 精确取的，所以选项必须连前缀一起写。
+          # 最后三台是 6.1 线上原来没有裸名/_v 变体的机型（oneplus_nord_5 上游已有，不重复加）。
           - JiuGeFaCai_oneplus_13_v
           - JiuGeFaCai_oneplus_ace5_pro_v
+          - oneplus_nord_4_v
+          - oneplus_ace_3v_v
+          - oneplus_nord_ce4_lite_5g_v
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
@@ -2259,22 +2262,33 @@ jobs:
               || { echo "::error::打出来的 ZRAM 模块包 update-binary 没有执行位，装了也会失败"; exit 1; }
             echo "ZRAM 模块已打进包: $(wc -c < ZRAM-Module.zip) 字节"
           fi
-          # 原 susfs 那块是音量键选的，把取键那一行换成默认安装（存在 SKIP_MODULE_INSTALL 则跳过），
-          # 只改这一行，后面 case 的既有代码原样复用。
+          # 上游 susfs 那块用音量键决定装不装。这里历史上用 sed 改取键行，改完只要 grep 到
+          # 'KEY_VOLUMEDOWN )' 就判通过 —— 但产物实测给出的是另一个结果：那行命令替换里
+          # 混进了多个赋值和 echo，最终进 stdout 的只有 KEY_VOLUMEUP，于是永远走
+          # 「跳过安装」分支；而下面的自动安装段又故意 continue 掉 ksu_module_susfs*.zip。
+          # 两处合起来的净效果 = susfs4ksu 从来没被装上，sus mounts / sus path / loop 隐藏
+          # 这些运行时隐藏面全丢。这才是"隐藏性垃圾"的主因，不是内核少编了什么。
           grep -q 'getevent -qlc 1' anykernel.sh || { echo "::error::找不到取键行，上游结构变了，拒绝继续"; exit 1; }
-          # 包里有两处取键：前一处是"要不要继续刷"，后一处是"要不要装 susfs 模块"。
-          # 分隔符用 # 不用 |（替换里有 ||），&& 要转义成 &&，否则 & 被当成"整段匹配"。
+          # 两处取键：前一处是"要不要继续刷"，后一处是"要不要装 susfs 模块"。
+          # 两行都改成常量，不再用命令替换（替换文本里混东西就是这次的事故来源）：
+          # 第一处默认继续刷；第二处固定"不装"，装不装完全交给下面的自动段，避免装两遍。
           sed -i '0,/getevent/s#key_click=.*getevent.*#key_click=KEY_VOLUMEDOWN#' anykernel.sh
-          sed -i 's#key_click=.*getevent.*#key_click=$( [ -f ./SKIP_MODULE_INSTALL ] \&\& echo KEY_VOLUMEUP || echo KEY_VOLUMEDOWN )#' anykernel.sh
-          # 再把包内其余模块 zip 用同一条 ksud 路径自动装（susfs 已由上面那块处理，这里排除，避免装两遍）
+          sed -i 's#key_click=.*getevent.*#key_click=KEY_VOLUMEUP#' anykernel.sh
+          [ "$(grep -c 'getevent' anykernel.sh)" = "0" ] || { echo "::error::还残留取键，无头刷会挂住"; exit 1; }
           # 上游 anykernel.sh 的最后一行 **没有换行符**（本地实测：echo 'x' >> 之后
           # 变成 "fi# ---- bundled …"，fi 被并进注释 → sh -n 报 unexpected end of file，
           # 整包直接刷不动）。追加前先补齐行尾换行。
           if [ -n "$(tail -c 1 anykernel.sh)" ]; then echo '' >> anykernel.sh; fi
-          grep -q 'bundled module auto-install' anykernel.sh || {
+          grep -q 'AUTO_INSTALL_BEGIN' anykernel.sh || {
             echo '# ---- bundled module auto-install, injected by the workflow ----' >> anykernel.sh
-            echo 'KSUD_PATH="/data/adb/ksud"' >> anykernel.sh
+            echo '# ---- AUTO_INSTALL_BEGIN ----' >> anykernel.sh
+            # 这两个路径在产物里保持原样（生产值就是 /data/…），只是允许被环境覆盖，
+            # 否则本地/CI 的行为闸门根本没法在没有 /data 的机器上跑。
+            echo 'KSUD_PATH="${KSUD_PATH:-/data/adb/ksud}"' >> anykernel.sh
+            echo 'SUSFS_CFG="${SUSFS_CFG:-/data/adb/susfs4ksu/config.sh}"' >> anykernel.sh
+            echo 'SUSFS_DIR="$(dirname "$SUSFS_CFG")"' >> anykernel.sh
             echo 'AUTO_N=0' >> anykernel.sh
+            echo 'SUS_INS=0' >> anykernel.sh
             echo 'if [ -f ./SKIP_MODULE_INSTALL ]; then' >> anykernel.sh
             echo '  ui_print "检测到 SKIP_MODULE_INSTALL，模块自动安装已关闭"' >> anykernel.sh
             echo 'elif [ ! -f "$KSUD_PATH" ]; then' >> anykernel.sh
@@ -2282,17 +2296,68 @@ jobs:
             echo 'else' >> anykernel.sh
             echo '  for M in "$AKHOME"/*.zip; do' >> anykernel.sh
             echo '    [ -f "$M" ] || continue' >> anykernel.sh
-            echo '    case "$(basename "$M")" in ksu_module_susfs*) continue ;; esac' >> anykernel.sh
             echo '    ui_print "自动安装模块: $(basename "$M")"' >> anykernel.sh
-            echo '    if "$KSUD_PATH" module install "$M"; then AUTO_N=$((AUTO_N+1)); else ui_print "安装失败: $(basename "$M")"; fi' >> anykernel.sh
+            echo '    if "$KSUD_PATH" module install "$M"; then' >> anykernel.sh
+            echo '      AUTO_N=$((AUTO_N+1))' >> anykernel.sh
+            echo '      case "$(basename "$M")" in ksu_module_susfs*) SUS_INS=1 ;; esac' >> anykernel.sh
+            echo '    else' >> anykernel.sh
+            echo '      ui_print "安装失败: $(basename "$M")"' >> anykernel.sh
+            echo '    fi' >> anykernel.sh
             echo '  done' >> anykernel.sh
             echo '  ui_print "模块自动安装完成，共 $AUTO_N 个"' >> anykernel.sh
+            # 隐藏开关落地。/data/adb/susfs4ksu/config.sh 是**持久**文件，模块自带的
+            # customize.sh 只做「补新键、绝不改旧键」（实测 174-188 行），所以出厂的
+            # 全 0 值在装过第二遍的机器上会永久保留 —— 光把 config.sh 烘进模块 zip
+            # 对老机器无效，必须刷完后强制覆盖。
+            echo '  if [ "$SUS_INS" = "1" ]; then' >> anykernel.sh
+            echo '    mkdir -p "$SUSFS_DIR"' >> anykernel.sh
+            echo '    for KV in hide_loops=1 hide_vendor_sepolicy=1 hide_compat_matrix=1 hide_cusrom=1 spoof_cmdline=1 avc_log_spoofing=1 susfs_log=0; do' >> anykernel.sh
+            echo '      K=${KV%%=*}' >> anykernel.sh
+            echo '      if grep -q "^${K}=" "$SUSFS_CFG" 2>/dev/null; then' >> anykernel.sh
+            echo '        sed -i "s|^${K}=.*|${KV}|" "$SUSFS_CFG"' >> anykernel.sh
+            echo '      else' >> anykernel.sh
+            echo '        echo "$KV" >> "$SUSFS_CFG"' >> anykernel.sh
+            echo '      fi' >> anykernel.sh
+            echo '    done' >> anykernel.sh
+            echo '    ui_print "SUSFS 开关已强制落地: $(grep -E "^(hide_loops|hide_vendor_sepolicy|hide_compat_matrix|hide_cusrom|spoof_cmdline|avc_log_spoofing|susfs_log)=" "$SUSFS_CFG" | paste -sd" " -)"' >> anykernel.sh
+            echo '  fi' >> anykernel.sh
             echo 'fi' >> anykernel.sh
+            echo '# ---- AUTO_INSTALL_END ----' >> anykernel.sh
           }
           sh -n anykernel.sh || { echo "::error::改完的 anykernel.sh 语法不过"; exit 1; }
-          grep -q 'bundled module auto-install' anykernel.sh || { echo "::error::自动安装段没写进去"; exit 1; }
-          grep -q 'KEY_VOLUMEDOWN )' anykernel.sh || { echo "::error::取键行没被改成默认安装"; exit 1; }
-          echo "自动安装段与默认安装改动都已落盘"
+          grep -q 'AUTO_INSTALL_BEGIN' anykernel.sh || { echo "::error::自动安装段没写进去"; exit 1; }
+          # 行为闸门：不 grep 文本，直接把自动段抽出来用假 ksud / 假 AKHOME 真跑一遍，
+          # 看 susfs 模块是不是真被装上、7 个开关是不是真进了 config.sh。
+          SB=$(mktemp -d); SB2=$(mktemp -d)
+          mkdir -p "$SB/AKHOME" "$SB/data/adb/susfs4ksu" "$SB2/AKHOME" "$SB2/data/adb/susfs4ksu"
+          awk '/AUTO_INSTALL_BEGIN/{f=1;next} /AUTO_INSTALL_END/{f=0} f' anykernel.sh > "$SB/blk.sh"
+          printf '#!/bin/sh\nif [ "$1" = module ] && [ "$2" = install ]; then echo "$3" >> "$FAKE_KSUD_LOG"; fi\n' > "$SB/data/adb/ksud"
+          chmod +x "$SB/data/adb/ksud" "$SB/blk.sh"
+          ui_print() { echo "  >> $1"; }
+          # 正向：包里有 susfs 模块 zip，且 config.sh 里已经是「出厂全 0」的老状态
+          echo x > "$SB/AKHOME/ksu_module_susfs_1.5.2+_Release.zip"
+          printf 'hide_loops=0\nsusfs_log=1\nspoof_uname=0\n' > "$SB/data/adb/susfs4ksu/config.sh"
+          ( cd "$SB/AKHOME" \
+            && AKHOME="$SB/AKHOME" KSUD_PATH="$SB/data/adb/ksud" FAKE_KSUD_LOG="$SB/installed.txt" \
+               SUSFS_CFG="$SB/data/adb/susfs4ksu/config.sh" export AKHOME KSUD_PATH FAKE_KSUD_LOG SUSFS_CFG \
+            && . "$SB/blk.sh" ) > "$SB/out.txt" 2>&1
+          grep -q 'susfs' "$SB/installed.txt" 2>/dev/null || { echo "::error::自动段没把 susfs 模块装上（行为闸门）"; cat "$SB/out.txt"; exit 1; }
+          for K in hide_loops=1 hide_vendor_sepolicy=1 hide_compat_matrix=1 hide_cusrom=1 spoof_cmdline=1 avc_log_spoofing=1 susfs_log=0; do
+            grep -qx "$K" "$SB/data/adb/susfs4ksu/config.sh" || { echo "::error::开关 $K 没落到 config.sh"; cat "$SB/out.txt"; exit 1; }
+          done
+          grep -qx 'spoof_uname=0' "$SB/data/adb/susfs4ksu/config.sh" || { echo "::error::误伤了没打算动的 spoof_uname"; exit 1; }
+          # 反向测：放 ./SKIP_MODULE_INSTALL 时必须一个都不装、也不许碰 config.sh
+          echo x > "$SB2/AKHOME/ksu_module_susfs_a.zip"; : > "$SB2/AKHOME/SKIP_MODULE_INSTALL"
+          cp "$SB/data/adb/ksud" "$SB2/ksud"
+          printf 'hide_loops=0\n' > "$SB2/data/adb/susfs4ksu/config.sh"
+          ( cd "$SB2/AKHOME" \
+            && AKHOME="$SB2/AKHOME" KSUD_PATH="$SB2/ksud" FAKE_KSUD_LOG="$SB2/installed.txt" \
+               SUSFS_CFG="$SB2/data/adb/susfs4ksu/config.sh" export AKHOME KSUD_PATH FAKE_KSUD_LOG SUSFS_CFG \
+            && . "$SB/blk.sh" ) > "$SB2/out.txt" 2>&1
+          [ ! -f "$SB2/installed.txt" ] || { echo "::error::SKIP_MODULE_INSTALL 没被尊重，还是装了模块"; exit 1; }
+          grep -qx 'hide_loops=0' "$SB2/data/adb/susfs4ksu/config.sh" || { echo "::error::跳过安装时却改写了 config.sh"; exit 1; }
+          rm -rf "$SB" "$SB2"
+          echo "自动安装段：正向（装上 susfs + 7 开关强制落地）与反向（SKIP 时零动作）行为都验过"
 
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v7
