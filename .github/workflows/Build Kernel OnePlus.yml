@@ -1120,6 +1120,41 @@ jobs:
 
           # SUSFS配置
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
+            # builtin 分支的 kernel/manager/pkg_observer.c:24/37 和 supercall/dispatch.c:478
+            # 直接调 SUSFS v2.3.0 的优先级 UID 接口，可它自己的 Kconfig 没声明
+            # KSU_SUSFS_PRIORITY_UID_FILTER —— 于是 susfs.h 里那两条声明被 #ifdef 关掉，
+            # 调用点成了隐式声明，clang 当错误：
+            #   error: call to undeclared function 'susfs_parse_priority_app_strings'
+            # run 41545476210 / 41545481017 / 41545485898 三条全栽在这儿。
+            # 按 SUSFS 上游 10_enable_susfs_for_ksu.patch 的原文把声明补进树里
+            # （插在最后一个 endmenu 之前，仍在 KSU 菜单内），补完 olddefconfig 就不会
+            # 再把它丢掉，优先级过滤也就真编进产物了。
+            KCFG=$(grep -rl 'config KSU_SUSFS_SPOOF_UNAME' . --include=Kconfig 2>/dev/null | head -n 1)
+            [ -n "$KCFG" ] || { echo "::error::找不到声明 KSU_SUSFS_* 的 Kconfig，无法补优先级开关"; exit 1; }
+            echo "KSU 的 Kconfig: $KCFG"
+            if grep -q 'config KSU_SUSFS_PRIORITY_UID_FILTER' "$KCFG"; then
+              echo "上游已自己声明优先级开关，不重复补"
+            else
+              # 插到最后一个 endmenu 之前（仍在 KSU 菜单里）。不用 awk BEGIN 里数行数：
+              # BEGIN 阶段 FILENAME 还没赋值，那种写法取到的是空文件。
+              LAST=$(grep -n '^endmenu' "$KCFG" | tail -1 | cut -d: -f1)
+              [ -n "$LAST" ] || { echo "::error::$KCFG 里没有 endmenu，不知道往哪儿插优先级开关"; exit 1; }
+              {
+                head -n "$((LAST - 1))" "$KCFG"
+                printf "config KSU_SUSFS_PRIORITY_UID_FILTER\n"
+                printf "\tbool \"Enable to allow adding user-defined uids that will be hidden from getpriority/setpriority/ioprio_get/ioprio_set syscall\"\n"
+                printf "\tdepends on KSU_SUSFS\n"
+                printf "\tdefault y\n"
+                printf "\thelp\n"
+                printf "\t  - Allow hiding user-defined uids from syscalls like getpriority/setpriority/ioprio_get/ioprio_set.\n"
+                printf "\t  - Effective on all processes with uid >= 10000.\n"
+                printf "\n"
+                tail -n +"$LAST" "$KCFG"
+              } > "$KCFG.new"
+              grep -q 'config KSU_SUSFS_PRIORITY_UID_FILTER' "$KCFG.new" || { echo "::error::优先级开关没补进去（Kconfig 结构变了）"; exit 1; }
+              mv "$KCFG.new" "$KCFG"
+              echo "✅ 已补声明 KSU_SUSFS_PRIORITY_UID_FILTER（default y, depends on KSU_SUSFS）"
+            fi
             set_config "CONFIG_KSU_SUSFS=y"
             set_config "CONFIG_KSU_SUSFS_SUS_PATH=y"
             set_config "CONFIG_KSU_SUSFS_SUS_MAP=y"
@@ -1875,7 +1910,7 @@ jobs:
           # 硬断：隐藏链路真正调用的入口，少一个就是回归，直接红。
           # 名字一律取自主动源码面（上一版这里手写清单里有个名字压根不是函数名，
           # 用的是子串匹配，结果既是假绿灯也是假红灯）。
-          HARD="susfs_init susfs_add_sus_path susfs_add_sus_path_loop susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_set_hide_sus_mnts_for_non_su_procs susfs_enable_log susfs_get_enabled_features"
+          HARD="susfs_init susfs_add_sus_path susfs_add_sus_path_loop susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_set_hide_sus_mnts_for_non_su_procs susfs_enable_log susfs_get_enabled_features susfs_set_priority_uid_filter"
           HM=""
           for S in $HARD; do
             grep -qx "$S" want.txt || { echo "::error::硬断清单过期：$S 不在本次源码的应有函数里，请核对上游改名"; exit 1; }
