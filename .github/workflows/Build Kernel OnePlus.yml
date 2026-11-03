@@ -1227,8 +1227,14 @@ jobs:
             # symlink 指过去** —— `grep -r` 与 `find -type f` 默认都不跟随符号链接，
             # 所以从 common/ 里搜永远搜不到。正解：先按 setup.sh 的真实布局直接认路径，
             # 再用 find -L / -R 跟随链接兜底。
+            # setup.sh 的真相（实测读它 main 分支 15-59 行）：GKI_ROOT 有两种取法——
+            #   有 common/drivers 时 GKI_ROOT=kernel_platform → KernelSU 落在 ../KernelSU
+            #   否则 GKI_ROOT=common        → KernelSU 落在 ./KernelSU
+            # 候选表以前只有 ../KernelSU，少了 ./KernelSU 这一支；6.6/6.12 那两条线
+            # 的树形就是走不通才在 00:13 死在「找不到 Kconfig」（那条 run 用的还是更早的
+            # grep -rl 版本，但候选表缺项是真的）。两种布局都列上，再让 find -L 兜底。
             KCFG=""
-            for C in ../KernelSU/kernel/Kconfig ./drivers/kernelsu/Kconfig ./drivers/KernelSU/Kconfig; do
+            for C in ../KernelSU/kernel/Kconfig ./KernelSU/kernel/Kconfig ./drivers/kernelsu/Kconfig ./drivers/KernelSU/Kconfig; do
               if [ -f "$C" ] && grep -q 'KSU_SUSFS' "$C"; then KCFG="$C"; break; fi
             done
             if [ -z "$KCFG" ]; then
