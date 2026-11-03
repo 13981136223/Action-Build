@@ -9,13 +9,10 @@ on:
         default: oneplus_ace5
         options:
           - oneplus_13
-          - oneplus_13_v
-          - JiuGeFaCai_oneplus_13_v
           - oneplus_13_global
           - oneplus_13s
           - oneplus_13t
           - oneplus_ace5_pro
-          - JiuGeFaCai_oneplus_ace5_pro_v
           - oneplus_pad_2_pro
           - oneplus_pad_3
           - oneplus_12_u
@@ -72,8 +69,6 @@ on:
           - oneplus_13s_b
           - oneplus_pad_2_pro_b
           - oneplus_pad_3_b
-          - JiuGeFaCai_oneplus_13_v
-          - JiuGeFaCai_oneplus_ace5_pro_v
           - oneplus_ace5_race_b
           - oneplus_ace5_ultra_b
           - oneplus_pad2_mt6991_b
