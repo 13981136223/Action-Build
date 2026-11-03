@@ -2071,7 +2071,10 @@ jobs:
           # 所以在第一个动分区的动作 split_boot 之前自己插一道闸门。
           set -e
           cd "$GITHUB_WORKSPACE/AnyKernel3"
-          EXPECTED=$(grep -ao 'Linux version [^ ]*' Image | head -1 | cut -d' ' -f3)
+          # grep 读不到时返回非 0，在 set -e 下会当场把这一步杀掉，导致下面那句
+          # "::error::读不到 Image 的版本串" 永远印不出来 —— 结果是对的（拒绝出无闸门包），
+          # 但日志里只剩一个没头没尾的退出码。|| true 让它走到显式报错。
+          EXPECTED=$(grep -ao 'Linux version [^ ]*' Image | head -1 | cut -d' ' -f3 || true)
           if [ -z "$EXPECTED" ]; then
             echo "::error::读不到 Image 的版本串，拒绝在不加闸门的情况下出包"
             exit 1
@@ -2097,7 +2100,10 @@ jobs:
           echo 'ui_print "current  kernel: $CUR_UTS"' >> "$G"
           # 版本号只核本机 KMI 前缀（6.1 / 6.6 / 6.12 由本次构建推导），后面的 git hash 放行。
           echo 'BYPASS=""' >> "$G"
-          echo 'for b in ./IGNORE_DEVICE_CHECK /sdcard/IGNORE_DEVICE_CHECK /tmp/IGNORE_DEVICE_CHECK; do' >> "$G"
+          # 旁路文件名三个都认：新闸门用 IGNORE_DEVICE_CHECK，但历史产物（以及旧文档）里
+          # 写的是 IGNORE_ACE5_CHECK / IGNORE_UTS_CHECK。变砖自救只有一句话的容错空间，
+          # 文档写的名字包不认 = 没有自救通道。
+          echo 'for b in ./IGNORE_DEVICE_CHECK /sdcard/IGNORE_DEVICE_CHECK /tmp/IGNORE_DEVICE_CHECK ./IGNORE_ACE5_CHECK /sdcard/IGNORE_ACE5_CHECK /tmp/IGNORE_ACE5_CHECK ./IGNORE_UTS_CHECK /sdcard/IGNORE_UTS_CHECK /tmp/IGNORE_UTS_CHECK; do' >> "$G"
           echo '  if [ -f "$b" ]; then BYPASS=1; ui_print "发现旁路文件: $b"; fi' >> "$G"
           echo 'done' >> "$G"
           echo 'case "$CUR_UTS" in' >> "$G"
