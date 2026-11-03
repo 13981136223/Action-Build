@@ -9,10 +9,13 @@ on:
         default: oneplus_ace5
         options:
           - oneplus_13
+          - oneplus_13_v
+          - JiuGeFaCai_oneplus_13_v
           - oneplus_13_global
           - oneplus_13s
           - oneplus_13t
           - oneplus_ace5_pro
+          - JiuGeFaCai_oneplus_ace5_pro_v
           - oneplus_pad_2_pro
           - oneplus_pad_3
           - oneplus_12_u
@@ -61,6 +64,7 @@ on:
           - oneplus_pad_pro_b
           - oneplus_pad2_b
           - oneplus_nord_ce5_b
+          - oneplus_nord_5
           - oneplus_nord_5_b
           - oneplus_ace5_pro_b
           - oneplus_13_b
@@ -68,6 +72,8 @@ on:
           - oneplus_13s_b
           - oneplus_pad_2_pro_b
           - oneplus_pad_3_b
+          - JiuGeFaCai_oneplus_13_v
+          - JiuGeFaCai_oneplus_ace5_pro_v
           - oneplus_ace5_race_b
           - oneplus_ace5_ultra_b
           - oneplus_pad2_mt6991_b
@@ -81,6 +87,12 @@ on:
           - oneplus_pad_3_pro
           - oneplus_pad_4
           - oneplus_ace6_ultra
+          # 下面三条是 device_matrix.js 对着 OnePlusOSS/kernel_manifest 全量比对后补的缺口：
+          # 前两条是第三方 ROM 变体（XML 文件名自带 JiuGeFaCai_ 前缀，查找按精确文件名，
+          # 所以选项必须连着前缀一起写），第三条是 Nord 5 出厂版（_b 早就有，裸名一直缺）。
+          - oneplus_nord_5
+          - JiuGeFaCai_oneplus_13_v
+          - JiuGeFaCai_oneplus_ace5_pro_v
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
