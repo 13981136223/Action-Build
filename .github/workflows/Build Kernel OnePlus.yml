@@ -1185,7 +1185,15 @@ jobs:
             set_config "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
             set_config "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-            set_config "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
+            # ENABLE_LOG 是我们**故意唯一关掉**的一个：
+            #   fs/susfs.c 里是 DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled) —— 键默认就是"开"，
+            #   而模块 service.sh 只在 susfs_log=1 时调 enable_log 1，**从不调 enable_log 0**。
+            #   所以只要把 ENABLE_LOG 编成 y，内核从 susfs_init 起就往 kmsg 打
+            #   "susfs:[uid][pid][函数名] ..."，改 config.sh 也拧不动（行已经进了环形缓冲）。
+            #   编成 n 之后 SUSFS_LOGI/LOGE 整个宏变成空（susfs.c 第 44-45 行），运行时零日志面，
+            #   dispatch.c 的 CMD_SUSFS_ENABLE_LOG 分支也被 #ifdef 包着，不会隐式声明。
+            #   代价：管理器里那个"内核日志"开关失效 —— 对隐藏来说这正是想要的。
+            set_config "CONFIG_KSU_SUSFS_ENABLE_LOG=n"
             set_config "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
             set_config "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
             set_config "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
@@ -1220,10 +1228,16 @@ jobs:
             echo "上游声明的 SUSFS 开关: $ND 个 -> $(echo "$DECL" | tr '\n' ' ')"
             [ "$ND" -ge 9 ] || { echo "::error::只声明了 $ND 个 SUSFS 开关，比已知最少值还少，先查上游是否改了名"; exit 1; }
             for K in $DECL; do
-              grep -qF "CONFIG_$K=y" "$CONFIG_FILE" || MISSING="$MISSING CONFIG_$K"
+              if [ "$K" = "KSU_SUSFS_ENABLE_LOG" ]; then
+                # 这一个是我们主动关的（见上面注释），断言方向反过来
+                grep -qE '^CONFIG_KSU_SUSFS_ENABLE_LOG=n$|^# CONFIG_KSU_SUSFS_ENABLE_LOG is not set$' "$CONFIG_FILE" \
+                  || MISSING="$MISSING CONFIG_$K(应为 n)"
+              else
+                grep -qF "CONFIG_$K=y" "$CONFIG_FILE" || MISSING="$MISSING CONFIG_$K"
+              fi
             done
-            [ -z "$MISSING" ] || { echo "::error::以下 SUSFS 开关没打开：$MISSING"; exit 1; }
-            echo "✅ 上游声明的 $ND 个 SUSFS 开关在 defconfig 里全部 =y"
+            [ -z "$MISSING" ] || { echo "::error::以下 SUSFS 开关没到位：$MISSING"; exit 1; }
+            echo "✅ 上游声明的 $ND 个 SUSFS 开关全部到位（ENABLE_LOG 主动设 n，其余 =y）"
             printf '%s\n' "$DECL" | grep -qx 'KSU_SUSFS_PRIORITY_UID_FILTER' \
               && echo "  这条线支持 PRIORITY_UID_FILTER（隐藏 getpriority/ioprio 探测）" \
               || echo "  注：这条线的上游 Kconfig 不声明 KSU_SUSFS_PRIORITY_UID_FILTER，优先级 UID 过滤不可能编进产物（只有 tiann/KernelSU 有），不算回归"
@@ -1892,6 +1906,14 @@ jobs:
           [ -n "$KC" ] || { echo "::error::找不到声明 KSU_SUSFS_* 的 Kconfig"; exit 1; }
           echo "检查 $IMG 里的 SUSFS 符号面（版本 $SUSFS_VER，源码 $SRC，声明面 $KC）"
           grep -aoE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KC" | sed 's/^config //' | sort -u > decl.txt
+          # 还要认"我们主动设为 n"的那些：声明过 ≠ 打开。守卫是声明的，但值是我们自己关的，
+          # 这类函数不在产物里是**设计**，不该混进缺失告警里当噪音（现在只有 ENABLE_LOG）。
+          CONF=$(find . kernel_workspace -type f -path "*/arch/arm64/configs/gki_defconfig" 2>/dev/null | head -n 1)
+          : > off.txt
+          if [ -n "$CONF" ]; then
+            { grep -oE '^CONFIG_KSU_SUSFS[A-Z0-9_]*=n$' "$CONF" | sed 's/^CONFIG_//; s/=n$//';
+              grep -oE '^# CONFIG_KSU_SUSFS[A-Z0-9_]* is not set$' "$CONF" | sed 's/^# CONFIG_//; s/ is not set$//'; } | sort -u > off.txt
+          fi
           # 函数名 + 它外层所有 KSU_SUSFS 守卫（可能嵌套，全部要求声明过才算应有）
           # 注意栈里要收*所有*#if 系列（含 LINUX_VERSION_CODE 这类），否则它们的
           # #endif 会把不属于它的 SUSFS 守卫弹掉，整个判定就错位了。
@@ -1916,16 +1938,20 @@ jobs:
           [ -s sym_guards.txt ] || { echo "::error::从 susfs.c 里一个非 static 函数都没提到，核对器自己是瞎的"; exit 1; }
           : > want.txt; : > skip.txt
           while IFS=$'\t' read -r NAME GUARDS; do
-            UNSAT=""
-            for G in $GUARDS; do grep -qx "$G" decl.txt || UNSAT="$UNSAT $G"; done
-            if [ -n "$UNSAT" ]; then printf '%s\t%s\n' "$NAME" "$UNSAT" >> skip.txt
+            UNSAT=""; OFFHIT=""
+            for G in $GUARDS; do
+              if ! grep -qx "$G" decl.txt; then UNSAT="$UNSAT $G"; fi
+              if grep -qx "$G" off.txt; then OFFHIT="$OFFHIT $G"; fi
+            done
+            if [ -n "$UNSAT" ]; then printf '%s\t%s\n' "$NAME" "守卫未声明$UNSAT" >> skip.txt
+            elif [ -n "$OFFHIT" ]; then printf '%s\t%s\n' "$NAME" "主动设为 n$OFFHIT" >> skip.txt
             else printf '%s\n' "$NAME" >> want.txt; fi
           done < sym_guards.txt
           sort -u -o want.txt want.txt; sort -u -o skip.txt skip.txt
           grep -ao "susfs_[a-z0-9_]*" "$IMG" | sort -u > have_syms.txt
           echo "源码非 static 的 susfs_* 函数: $(($(wc -l < want.txt) + $(wc -l < skip.txt))) 个（应有 $(wc -l < want.txt)，上游不支持 $(wc -l < skip.txt)）"
           if [ -s skip.txt ]; then
-            echo "  上游 Kconfig 没声明这些守卫，函数不可能出现（不算回归）："
+            echo "  这些函数按设计不会进产物（守卫未声明 / 我们主动关掉），不算回归："
             sed 's/^/    /' skip.txt
           fi
           MISS=$(comm -23 want.txt have_syms.txt | tr '\n' ' ')
@@ -1933,7 +1959,7 @@ jobs:
           # 硬断：隐藏链路真正调用的入口，少一个就是回归，直接红。
           # 名字一律取自主动源码面（上一版这里手写清单里有个名字压根不是函数名，
           # 用的是子串匹配，结果既是假绿灯也是假红灯）。
-          HARD="susfs_init susfs_add_sus_path susfs_add_sus_path_loop susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_set_hide_sus_mnts_for_non_su_procs susfs_enable_log susfs_get_enabled_features susfs_set_priority_uid_filter"
+          HARD="susfs_init susfs_add_sus_path susfs_add_sus_path_loop susfs_add_sus_map susfs_add_sus_kstat susfs_add_open_redirect susfs_set_uname susfs_set_cmdline_or_bootconfig susfs_set_hide_sus_mnts_for_non_su_procs susfs_get_enabled_features susfs_set_priority_uid_filter"
           HM=""
           for S in $HARD; do
             grep -qx "$S" want.txt || { echo "::error::硬断清单过期：$S 不在本次源码的应有函数里，请核对上游改名"; exit 1; }
