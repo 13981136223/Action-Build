@@ -102,19 +102,24 @@ def main():
         return 2
     root = sys.argv[1]
 
+    # 判定标记必须是「要插入的那一行」，不能只写符号名：真树里调用点（hooks.c:6643
+    # susfs_security_context_to_sid(...)）是补丁的成功 hunk 带进来的，只查符号名会把
+    # 「有调用、没声明」当成已完成，末尾自检同样被骗过（run 41657781119 就是这么挂的）。
     insert_after(root, 'fs/exec.c', '#include <linux/fdtable.h>\n', INC_EXEC,
-                 'susfs_def.h', 'exec.c 用了 susfs_is_current_proc_no_su')
+                 '#include <linux/susfs_def.h>', 'exec.c 用了 susfs_is_current_proc_no_su')
     insert_after(root, 'fs/proc/base.c', '#include <linux/cpufreq_times.h>\n', INC_BASE,
-                 'susfs_def.h', 'base.c 用了 SUS_MAP / OPEN_REDIRECT 钩子')
+                 '#include <linux/susfs_def.h>', 'base.c 用了 SUS_MAP / OPEN_REDIRECT 钩子')
     insert_after(root, 'security/selinux/hooks.c', 'struct selinux_state selinux_state;\n', EXT_SELINUX,
-                 'susfs_security_context_to_sid', 'selinux hooks 需要 susfs extern')
+                 'extern int susfs_security_context_to_sid', 'selinux hooks 需要 susfs extern')
     patch_task_mmu(root)
 
     checks = [
-        ('fs/exec.c', 'susfs_def.h'),
-        ('fs/proc/base.c', 'susfs_def.h'),
-        ('security/selinux/hooks.c', 'susfs_security_context_to_sid'),
-        ('fs/proc/task_mmu.c', 'SUSFS_IS_INODE_SUS_MAP'),
+        ('fs/exec.c', '#include <linux/susfs_def.h>'),
+        ('fs/proc/base.c', '#include <linux/susfs_def.h>'),
+        ('security/selinux/hooks.c', 'extern int susfs_security_context_to_sid'),
+        ('security/selinux/hooks.c', 'extern bool ksu_selinux_hide_running'),
+        ('fs/proc/task_mmu.c', 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\treturn 0;'),
+        ('fs/proc/task_mmu.c', 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tcontinue;'),
     ]
     gone = []
     for rel, marker in checks:
