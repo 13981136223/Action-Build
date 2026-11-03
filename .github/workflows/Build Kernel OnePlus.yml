@@ -91,6 +91,15 @@ on:
           - oneplus_nord_4_v
           - oneplus_ace_3v_v
           - oneplus_nord_ce4_lite_5g_v
+          # 下面 6 台是 MTK 线补进来的：OnePlusOSS/kernel_manifest 只有 13 条高通分支，
+          # MTK 的分支在 Numbersf/kernel_manifest（oneplus/mt6789…mt6993），矩阵当初没枚举到。
+          # 其中 ace5_ultra 是 mt6991、有风驰补丁；ace6_ultra_Canary / pad_lite_Canary_b 是 6.12。
+          - oneplus_ace5_race
+          - oneplus_ace5_ultra
+          - oneplus_ace6_ultra_Canary
+          - oneplus_nord_ce5_v
+          - oneplus_pad_lite_Canary_b
+          - oneplus_pad_mt6897_v
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
