@@ -1761,6 +1761,14 @@ jobs:
           echo "[runner.c 落在哪]"
           find -L kernel_platform -type f -name runner.c -path '*kernelsu*preinit*' 2>/dev/null || true
 
+      - name: Ensure KernelSU preinit runner
+        run: |
+          # 上一轮现场打印证明：修复步跑完时 runner 在，开编前整个 preinit 里一个 runner.c 都没有
+          # （setup.sh 之后还有步骤在动 drivers/kernelsu）。所以这道补必须在**紧贴开编**的位置。
+          ENS="/tmp/ensure_preinit_runner.sh"
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/ensure_preinit_runner.sh" -o "$ENS"             || { echo "::error::取不到 ensure_preinit_runner.sh"; exit 1; }
+          bash "$ENS" "$GITHUB_WORKSPACE/kernel_workspace" || exit 1
+
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
         id: fast_build
