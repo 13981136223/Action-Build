@@ -926,27 +926,41 @@ jobs:
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             echo "正在打susfs补丁"
             kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsContext.kts" "$PWD" "$PWD/50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
-            # SUSFS_FUZZ_PLAN 起：6.12 线之前必挂 —— 本地拿 OnePlusOSS sm8850 真源码
-            # (oneplus/sm8850_b_16.0.0_oneplus_15) 复现过：fs/exec.c 1/4 hunk 失败
-            # （就是那三行 #include <linux/susfs_def.h>），fs/proc/task_mmu.c 3/8 失败
-            # （show_smap / smaps_rollup / pagemap 的隐藏钩子）。默认 fuzz 不够，
-            # `-F 3` 实测两个文件 8/8、4/4 全部干净应用、不留 .rej。
-            # 所以按 fuzz 0 → 2 → 3 逐级 dry-run 试探，选第一个能零 reject 的档位，
-            # 而不是老实地 `|| true` 把缺的钩子吞掉（钩子少了 = 隐藏面漏了，还看不出来）。
+            # SUSFS 补丁档位：**6.12 禁止 fuzz=3**。
+            # 实测（run 41588625844）fuzz=3 虽然 dry-run"零 reject"，但它把
+            # fs/proc/task_mmu.c 里 show_smap / show_smaps_rollup 的 SUS_MAP 钩子
+            # 按容差塞进了错误上下文，编译直接死：
+            #   ../fs/proc/task_mmu.c:1516: error: use of undeclared identifier 'vma'
+            # 老注释里"8/8、4/4 全部干净应用"是错的（那份源码和真树不是同一份）。
+            # 现在的策略：只试 0 与 2；仍失败就按 0 打（留下 .rej 让闸门点名），
+            # 然后由下面的 6.12 专用适配器**按真文件结构**补那两处钩子。
             SUSFS_PATCH="50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch"
             SUSFS_FUZZ=""
-            for FZ in 0 2 3; do
+            for FZ in 0 2; do
               if patch -p1 --dry-run -F "$FZ" < "$SUSFS_PATCH" >/dev/null 2>&1; then
                 SUSFS_FUZZ="$FZ"; break
               fi
             done
             if [ -n "$SUSFS_FUZZ" ]; then
-              echo "SUSFS 补丁按 fuzz=$SUSFS_FUZZ 可零 reject 应用"
+              echo "SUSFS 补丁按 fuzz=$SUSFS_FUZZ 应用（不高于 2）"
               patch -p1 -F "$SUSFS_FUZZ" < "$SUSFS_PATCH" || true
             else
-              echo "::warning::连 fuzz=3 都做不到零 reject，按 fuzz=3 强打，缺什么由后面的 include 修复与符号闸门点名"
-              patch -p1 -F 3 < "$SUSFS_PATCH" || true
+              echo "::warning::fuzz=0/2 都有 reject，按 fuzz=0 应用，剩余由 6.12 适配器与闸门处理"
+              patch -p1 -F 0 < "$SUSFS_PATCH" || true
             fi
+
+            if [ "${KANDROID_VERSION}-${KERNEL_VERSION}" = "android16-6.12" ]; then
+              # 6.12 适配器：show_smap / show_smaps_rollup 的 SUS_MAP 钩子补丁是按 do{}while 写的，
+              # 真树用 for_each_vma，fuzz<=2 必然打不上、fuzz=3 会塞错位置（已实测编译失败）。
+              # 脚本在本仓库 scripts/ 下，按本次 SHA 取回执行；不能读 kernel_workspace 里那份
+              # （那是 Numbersf 的克隆，没有这个文件）。
+              ADAPTER="/tmp/susfs612_adapter.py"
+              URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/susfs612_adapter.py"
+              curl -fsSL "$URL" -o "$ADAPTER" || { echo "::error::取不到 susfs612_adapter.py（本仓库 scripts/ 下）"; exit 1; }
+              python3 "$ADAPTER" fs/proc/task_mmu.c
+              echo "6.12 钩子适配完成"
+            fi
+
             # 打完当场核一遍：还有 .rej 就点名（不等到编译失败再回头猜）
             LEFT=$(find fs kernel mm security -name '*.rej' 2>/dev/null | head -5)
             if [ -n "$LEFT" ]; then
