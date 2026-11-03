@@ -957,7 +957,7 @@ jobs:
               ADAPTER="/tmp/susfs612_adapter.py"
               URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/susfs612_adapter.py"
               curl -fsSL "$URL" -o "$ADAPTER" || { echo "::error::取不到 susfs612_adapter.py（本仓库 scripts/ 下）"; exit 1; }
-              python3 "$ADAPTER" fs/proc/task_mmu.c
+              python3 "$ADAPTER" .
               echo "6.12 钩子适配完成"
             fi
 
