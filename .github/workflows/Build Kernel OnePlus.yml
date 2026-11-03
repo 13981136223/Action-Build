@@ -1132,7 +1132,9 @@ jobs:
             exit 0
           fi
           echo "正在拉取风驰补丁"
-          cp ./SCHED_PATCH/fengchi_${CLEAN_FILE}.patch ./
+          # 这行原来没有容错：分支存在但这台机型没补丁时，cp 非 0 会直接打死整条构建，
+          # 而下一行的 -f 判断本来就是为"没补丁"准备的。改成 || true 让它走到 FENGCHI_SKIP。
+          cp ./SCHED_PATCH/fengchi_${CLEAN_FILE}.patch ./ || true
           if [[ -f "fengchi_${CLEAN_FILE}.patch" ]]; then
             echo "正在打风驰补丁"
             dos2unix "fengchi_${CLEAN_FILE}.patch"
