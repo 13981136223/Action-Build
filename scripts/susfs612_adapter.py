@@ -1,83 +1,129 @@
 #!/usr/bin/env python3
-"""6.12 专用：把 SUSFS 补丁打不上的两处 SUS_MAP 钩子按**真源码结构**补上。
+"""android16-6.12 的 SUSFS 补丁适配器。
 
-为什么需要它（实测 run 41588625844）：
-- susfs4ksu 的 50_add_susfs_in_gki-android16-6.12.patch 里，show_smap 与
-  show_smaps_rollup 的钩子是按 do{}while 结构写的；
-- OnePlus 的 android16-6.12 真树里 show_smaps_rollup 用的是 for_each_vma；
-- fuzz=0/2 时这两个文件 3 个 hunk 必然失败；fuzz=3 会"零 reject"但把代码
-  塞进错误函数，编译报 `fs/proc/task_mmu.c:1516: use of undeclared identifier 'vma'`。
+真树实测（源 OnePlusOSS sm8845@oneplus/sm8845_b_16.0.0_ace_6t）：
+- fs/exec.c                缺 #include <linux/susfs_def.h> → susfs_is_current_proc_no_su 隐式声明
+- fs/proc/base.c           缺同名 include
+- security/selinux/hooks.c 缺 susfs 的两个 extern
+- fs/proc/task_mmu.c       缺 show_smap 早退 与 rollup 循环内的跳过。
+  rollup 真树是 `do { ... } for_each_vma(vmi, vma);`（宏=while），所以用 continue
+  （跳到条件推进迭代器）；**不能**拿带花括号的 for_each_vma 当锚点 —— 那个在
+  clear_refs_write 里，插错会改掉 clear_refs 的行为（这处是本地验证抓出来的）。
 
-所以：补丁一律 fuzz<=2 应用，然后本脚本按锚点插入，锚点命中次数不对就退出 2，
-绝不猜位置。
-用法：python3 susfs612_adapter.py <path/to/fs/proc/task_mmu.c>
+补丁一律 fuzz<=2；本脚本只按唯一锚点插入，锚点命中次数≠1 就退出 2。
+用法：python3 susfs612_adapter.py <kernel_root>
 """
+import os
 import sys
 
-MAC = '#ifdef CONFIG_KSU_SUSFS_SUS_MAP'
-END = '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP'
+DONE = []
 
-ANCHOR_SMAP = (
-    'static int show_smap(struct seq_file *m, void *v)\n'
-    '{\n'
-    '\tstruct vm_area_struct *vma = v;\n'
-    '\tstruct mem_size_stats mss = {};\n'
-)
-INS_SMAP = (
-    MAC + '\n'
-    '\tif (vma->vm_file) {\n'
-    '\t\tif (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
-    '\t\t\treturn 0;\n'
-    '\t}\n'
-    + END + '\n'
-)
-GUARD_SMAP = 'if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\treturn 0;'
 
-ANCHOR_ROLLUP = '\tfor_each_vma(vmi, vma) {\n'
-INS_ROLLUP = (
-    MAC + '\n'
-    '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
-    '\t\t\tcontinue;\n'
-    + END + '\n'
-)
-GUARD_ROLLUP = 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tcontinue;'
+def read(p):
+    with open(p, encoding='utf-8', errors='surrogateescape') as f:
+        return f.read()
+
+
+def write(p, s):
+    with open(p, 'w', encoding='utf-8', errors='surrogateescape') as f:
+        f.write(s)
+
+
+def insert_after(root, rel, anchor, ins, marker, why):
+    p = os.path.join(root, rel)
+    if not os.path.exists(p):
+        print('::warning::%s 不存在，跳过（%s）' % (rel, why))
+        return
+    s = read(p)
+    if marker in s:
+        return
+    n = s.count(anchor)
+    if n != 1:
+        print('::error::%s 锚点命中 %d 次（应 1），拒绝猜测（%s）' % (rel, n, why))
+        sys.exit(2)
+    write(p, s.replace(anchor, anchor + ins, 1))
+    DONE.append(rel)
+
+
+INC_EXEC = '#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n'
+INC_BASE = ('#if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n'
+            '#include <linux/susfs_def.h>\n'
+            '#endif // #if defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)\n')
+EXT_SELINUX = ('#ifdef CONFIG_KSU_SUSFS\n'
+               'extern bool ksu_selinux_hide_running __read_mostly;\n'
+               'extern int susfs_security_context_to_sid(const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp);\n'
+               '#endif // #ifdef CONFIG_KSU_SUSFS\n')
+
+SMAP_HOOK = ('#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
+             '\tif (vma->vm_file) {\n'
+             '\t\tif (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
+             '\t\t\treturn 0;\n'
+             '\t}\n'
+             '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n')
+ROLLUP_HOOK = ('#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
+               '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
+               '\t\t\tcontinue;\n'
+               '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n')
+
+
+def patch_task_mmu(root):
+    p = os.path.join(root, 'fs/proc/task_mmu.c')
+    if not os.path.exists(p):
+        print('::warning::fs/proc/task_mmu.c 不存在，跳过')
+        return
+    s = read(p)
+    changed = []
+
+    a1 = ('static int show_smap(struct seq_file *m, void *v)\n'
+          '{\n\tstruct vm_area_struct *vma = v;\n\tstruct mem_size_stats mss = {};\n')
+    if 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\treturn 0;' not in s:
+        if s.count(a1) != 1:
+            print('::error::task_mmu.c show_smap 锚点命中 %d 次（应 1）' % s.count(a1))
+            sys.exit(2)
+        s = s.replace(a1, a1 + SMAP_HOOK, 1)
+        changed.append('show_smap')
+
+    a2 = '\tdo {\n\t\tsmap_gather_stats(vma, &mss, 0);\n'
+    if 'SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n\t\t\tcontinue;' not in s:
+        if s.count(a2) != 1:
+            print('::error::task_mmu.c rollup do{ 锚点命中 %d 次（应 1）' % s.count(a2))
+            sys.exit(2)
+        s = s.replace(a2, '\tdo {\n' + ROLLUP_HOOK + '\t\tsmap_gather_stats(vma, &mss, 0);\n', 1)
+        changed.append('show_smaps_rollup')
+
+    if changed:
+        write(p, s)
+        DONE.append('fs/proc/task_mmu.c(' + ','.join(changed) + ')')
 
 
 def main():
     if len(sys.argv) != 2:
-        print('用法: susfs612_adapter.py <fs/proc/task_mmu.c>')
+        print('用法: susfs612_adapter.py <kernel_root>')
         return 2
-    path = sys.argv[1]
-    with open(path, encoding='utf-8', errors='surrogateescape') as f:
-        src = f.read()
+    root = sys.argv[1]
 
-    changed = []
+    insert_after(root, 'fs/exec.c', '#include <linux/fdtable.h>\n', INC_EXEC,
+                 'susfs_def.h', 'exec.c 用了 susfs_is_current_proc_no_su')
+    insert_after(root, 'fs/proc/base.c', '#include <linux/cpufreq_times.h>\n', INC_BASE,
+                 'susfs_def.h', 'base.c 用了 SUS_MAP / OPEN_REDIRECT 钩子')
+    insert_after(root, 'security/selinux/hooks.c', 'struct selinux_state selinux_state;\n', EXT_SELINUX,
+                 'susfs_security_context_to_sid', 'selinux hooks 需要 susfs extern')
+    patch_task_mmu(root)
 
-    if GUARD_SMAP not in src:
-        n = src.count(ANCHOR_SMAP)
-        if n != 1:
-            print('::error::show_smap 锚点命中 %d 次（应为 1），拒绝猜测' % n)
-            return 2
-        src = src.replace(ANCHOR_SMAP, ANCHOR_SMAP + INS_SMAP, 1)
-        changed.append('show_smap')
-
-    if GUARD_ROLLUP not in src:
-        n = src.count(ANCHOR_ROLLUP)
-        if n != 1:
-            print('::error::for_each_vma 锚点命中 %d 次（应为 1），拒绝猜测' % n)
-            return 2
-        src = src.replace(ANCHOR_ROLLUP, ANCHOR_ROLLUP + INS_ROLLUP, 1)
-        changed.append('show_smaps_rollup')
-
-    with open(path, 'w', encoding='utf-8', errors='surrogateescape') as f:
-        f.write(src)
-
-    n_ref = src.count('SUSFS_IS_INODE_SUS_MAP')
-    has_inc = '#include <linux/susfs_def.h>' in src
-    print('SUSFS_612_ADAPTER: 补了 %s；SUS_MAP 引用 %d 处；susfs_def.h 包含=%s'
-          % (','.join(changed) if changed else '无（本就存在）', n_ref, has_inc))
-    if n_ref < 2 or not has_inc:
-        print('::error::6.12 SUS_MAP 钩子不完整（引用 %d 处，include=%s）' % (n_ref, has_inc))
+    checks = [
+        ('fs/exec.c', 'susfs_def.h'),
+        ('fs/proc/base.c', 'susfs_def.h'),
+        ('security/selinux/hooks.c', 'susfs_security_context_to_sid'),
+        ('fs/proc/task_mmu.c', 'SUSFS_IS_INODE_SUS_MAP'),
+    ]
+    gone = []
+    for rel, marker in checks:
+        q = os.path.join(root, rel)
+        if os.path.exists(q) and marker not in read(q):
+            gone.append(rel + ' 缺 ' + marker)
+    print('SUSFS_612_ADAPTER: 已补 ' + (', '.join(DONE) if DONE else '无（本就齐全）'))
+    if gone:
+        print('::error::适配后仍缺：' + '；'.join(gone))
         return 2
     return 0
 
