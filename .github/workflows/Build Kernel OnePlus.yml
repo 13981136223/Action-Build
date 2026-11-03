@@ -100,6 +100,13 @@ on:
           - oneplus_nord_ce5_v
           - oneplus_pad_lite_Canary_b
           - oneplus_pad_mt6897_v
+          # 这 6 台是把两个 manifest 仓全量枚举后又找到的 6.12 机型（Canary 通道变体）
+          - oneplus_15_Canary
+          - oneplus_15t_Canary
+          - oneplus_15r_Canary
+          - oneplus_ace_6t_Canary
+          - oneplus_pad_3_pro_Canary
+          - oneplus_pad_4_Canary
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
