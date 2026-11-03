@@ -1129,9 +1129,33 @@ jobs:
             # 按 SUSFS 上游 10_enable_susfs_for_ksu.patch 的原文把声明补进树里
             # （插在最后一个 endmenu 之前，仍在 KSU 菜单内），补完 olddefconfig 就不会
             # 再把它丢掉，优先级过滤也就真编进产物了。
-            KCFG=$(grep -rl 'config KSU_SUSFS_SPOOF_UNAME' . --include=Kconfig 2>/dev/null | head -n 1)
-            [ -n "$KCFG" ] || { echo "::error::找不到声明 KSU_SUSFS_* 的 Kconfig，无法补优先级开关"; exit 1; }
+            # run 41549928406 这四条死在这儿：我原来用
+            #   grep -rl 'config KSU_SUSFS_SPOOF_UNAME' . --include=Kconfig
+            # 去找声明文件，结果没命中。原因不是文件名，而是 **SukiSU 的 setup.sh
+            # 把内核源码 clone 到 kernel_platform/KernelSU/，再在 drivers/ 下建一个
+            # symlink 指过去** —— `grep -r` 与 `find -type f` 默认都不跟随符号链接，
+            # 所以从 common/ 里搜永远搜不到。正解：先按 setup.sh 的真实布局直接认路径，
+            # 再用 find -L / -R 跟随链接兜底。
+            KCFG=""
+            for C in ../KernelSU/kernel/Kconfig ./drivers/kernelsu/Kconfig ./drivers/KernelSU/Kconfig; do
+              if [ -f "$C" ] && grep -q 'KSU_SUSFS' "$C"; then KCFG="$C"; break; fi
+            done
+            if [ -z "$KCFG" ]; then
+              KCFG=$(find -L . -type f -name 'Kconfig*' 2>/dev/null | xargs -r grep -ls 'KSU_SUSFS_SPOOF_UNAME' 2>/dev/null | head -n 1)
+            fi
+            if [ -z "$KCFG" ]; then
+              KCFG=$(grep -Rls 'KSU_SUSFS_SPOOF_UNAME' . 2>/dev/null | head -n 1)
+            fi
+            if [ -z "$KCFG" ]; then
+              echo "--- 现场诊断：drivers 下的 kernelsu 到底是什么 ---"
+              ls -l ./drivers/ 2>/dev/null | grep -aiE 'kernel|sus' | head -5
+              echo "--- 现场诊断：上一层有没有 KernelSU 目录 ---"
+              ls -d ../KernelSU 2>/dev/null && find -L ../KernelSU -maxdepth 2 -name 'Kconfig*' | head -5
+              echo "::error::找不到声明 KSU_SUSFS_* 的 Kconfig，无法补优先级开关（见上面现场）"
+              exit 1
+            fi
             echo "KSU 的 Kconfig: $KCFG"
+            echo "KSU_KCONFIG=$(cd "$(dirname "$KCFG")" && pwd)/$(basename "$KCFG")" >> "$GITHUB_ENV"
             if grep -q 'config KSU_SUSFS_PRIORITY_UID_FILTER' "$KCFG"; then
               echo "上游已自己声明优先级开关，不重复补"
             else
@@ -1187,14 +1211,11 @@ jobs:
             [ -n "$SUSFS_VER" ] || { echo "::error::susfs.h 里没有 SUSFS_VERSION"; exit 1; }
             echo "SUSFS_VERSION=$SUSFS_VER  来源分支: gki-$KMI"
             MISSING=""
-            # 断言集合不再手写：从真正进树的 KSU 源码 Kconfig 里现取声明过的开关名。
-            # 之前这里硬写 11 个还打印「11/11 全部 =y」，而它查的是 defconfig 文本 ——
-            # 上游没声明的名字写进去也会被 Kconfig 丢掉，那条绿灯是空的。
-            KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -path "*/KernelSU/kernel/Kconfig" 2>/dev/null | head -n 1)
-            [ -n "$KC" ] || KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -name Kconfig -path "*KernelSU*" 2>/dev/null | head -n 1)
-            [ -n "$KC" ] || { echo "::error::找不到 KernelSU/SukiSU 的 Kconfig，无法核对 SUSFS 开关面"; exit 1; }
-            echo "Kconfig 来源: $KC"
-            DECL=$(grep -oE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KC" | sed 's/^config //' | sort -u)
+            DECL=""
+            # 声明面就是刚才那个文件（同一步里已经定好了），别再猜路径
+            grep -aoE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KCFG" | sed 's/^config //' | sort -u > /tmp/decl_list.txt
+            echo "Kconfig 来源: $KCFG"
+            DECL=$(cat /tmp/decl_list.txt)
             ND=$(printf '%s\n' "$DECL" | grep -c '')
             echo "上游声明的 SUSFS 开关: $ND 个 -> $(echo "$DECL" | tr '\n' ' ')"
             [ "$ND" -ge 9 ] || { echo "::error::只声明了 $ND 个 SUSFS 开关，比已知最少值还少，先查上游是否改了名"; exit 1; }
@@ -1864,9 +1885,11 @@ jobs:
           [ -n "$IMG" ] || { echo "::error::找不到 Image 产物"; exit 1; }
           SRC=$(find . kernel_workspace -maxdepth 5 -type f -path "*/common/fs/susfs.c" 2>/dev/null | head -n 1)
           [ -n "$SRC" ] || { echo "::error::找不到拷进树里的 fs/susfs.c，无法核对符号面"; exit 1; }
-          KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -path "*/KernelSU/kernel/Kconfig" 2>/dev/null | head -n 1)
-          [ -n "$KC" ] || KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -name Kconfig -path "*KernelSU*" 2>/dev/null | head -n 1)
-          [ -n "$KC" ] || { echo "::error::找不到 KernelSU/SukiSU 的 Kconfig"; exit 1; }
+          KC="${{ env.KSU_KCONFIG }}"
+          if [ -z "$KC" ] || [ ! -f "$KC" ]; then
+            KC=$(find "$GITHUB_WORKSPACE/kernel_workspace" -type f -name 'Kconfig*' 2>/dev/null | xargs -r grep -ls 'KSU_SUSFS_SPOOF_UNAME' 2>/dev/null | head -n 1)
+          fi
+          [ -n "$KC" ] || { echo "::error::找不到声明 KSU_SUSFS_* 的 Kconfig"; exit 1; }
           echo "检查 $IMG 里的 SUSFS 符号面（版本 $SUSFS_VER，源码 $SRC，声明面 $KC）"
           grep -aoE '^config (KSU_SUSFS_[A-Z0-9_]+|KSU_SUSFS)' "$KC" | sed 's/^config //' | sort -u > decl.txt
           # 函数名 + 它外层所有 KSU_SUSFS 守卫（可能嵌套，全部要求声明过才算应有）
