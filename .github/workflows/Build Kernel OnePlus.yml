@@ -2124,8 +2124,12 @@ jobs:
           # 包里有两处取键：前一处是"要不要继续刷"，后一处是"要不要装 susfs 模块"。
           # 分隔符用 # 不用 |（替换里有 ||），&& 要转义成 &&，否则 & 被当成"整段匹配"。
           sed -i '0,/getevent/s#key_click=.*getevent.*#key_click=KEY_VOLUMEDOWN#' anykernel.sh
-          sed -i 's#key_click=.*getevent.*#key_click=$( [ -f ./SKIP_MODULE_INSTALL ] && echo KEY_VOLUMEUP || echo KEY_VOLUMEDOWN )#' anykernel.sh
+          sed -i 's#key_click=.*getevent.*#key_click=$( [ -f ./SKIP_MODULE_INSTALL ] \&\& echo KEY_VOLUMEUP || echo KEY_VOLUMEDOWN )#' anykernel.sh
           # 再把包内其余模块 zip 用同一条 ksud 路径自动装（susfs 已由上面那块处理，这里排除，避免装两遍）
+          # 上游 anykernel.sh 的最后一行 **没有换行符**（本地实测：echo 'x' >> 之后
+          # 变成 "fi# ---- bundled …"，fi 被并进注释 → sh -n 报 unexpected end of file，
+          # 整包直接刷不动）。追加前先补齐行尾换行。
+          if [ -n "$(tail -c 1 anykernel.sh)" ]; then echo '' >> anykernel.sh; fi
           grep -q 'bundled module auto-install' anykernel.sh || {
             echo '# ---- bundled module auto-install, injected by the workflow ----' >> anykernel.sh
             echo 'KSUD_PATH="/data/adb/ksud"' >> anykernel.sh
