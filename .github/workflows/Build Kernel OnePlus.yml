@@ -333,13 +333,27 @@ jobs:
           # path="kernel-6.6" 这种布局 —— 继续跑的结果不是报错，而是
           # setup.sh 找不到 drivers/ 就静默不接 KernelSU，烧完 30-40 分钟产出一个
           # 没有 SU/SUSFS 的"看起来成功"的包。所以在这里当场停下，并说清缺什么。
+          # 布局自适应。实测本流水线有 6 处**无条件**步骤直接 `cd kernel_platform/common`
+          # （含 Add Configuration Settings 与钉串那步），而 MTK 的 manifest 是单仓布局：
+          # 内核在 path="kernel-6.6"，没有 kernel_platform/common。
+          # 直接放过去 = Add Configuration Settings 在错的目录里改 defconfig，
+          # 结果不是报错而是 CONFIG_KSU_SUSFS_* 一条都没落地——隐藏性归零的"成功包"。
+          # 所以：双仓就照常走；单仓就软链 kernel_platform/common -> ../kernel-<ver>，
+          # 让所有 common 路径指向真正的内核树（SukiSU setup.sh 找的
+          # $GKI_ROOT/common/drivers 也随之成立）；两种都没有才停，并说明查过哪里。
           if ! grep -q 'path="kernel_platform/common"' "$XML_PATH"; then
-            KPATH=$(grep -o 'path="kernel-[0-9.]*"' "$XML_PATH" | head -n 1)
-            echo "::error::这台机型的 manifest 没有 kernel_platform/common（单仓布局 ${KPATH:-未知}），本流水线不支持它"
-            echo "MTK_UNSUPPORTED_LAYOUT: ${FILE} —— 要支持得单独写 MTK 集成路径（内核目录、补丁落点、setup.sh 的 GKI_ROOT 都要换）"
-            exit 9
+            KPATH=$(grep -o 'path="kernel-[0-9.]*"' "$XML_PATH" | head -n 1 | sed 's/path="//; s/"$//')
+            if [ -z "$KPATH" ]; then
+              echo "::error::这台机型的 manifest 既没有 kernel_platform/common，也没有单仓 kernel-<ver> 布局，流水线无法定位内核目录"
+              echo "UNKNOWN_LAYOUT: ${FILE}"
+              exit 9
+            fi
+            echo "SINGLE_TREE_LAYOUT: 内核在 ${KPATH}，建软链 kernel_platform/common -> ../${KPATH}"
+            echo "SINGLE_TREE_DIR=$KPATH" >> "$GITHUB_ENV"
+          else
+            echo "DUAL_TREE_LAYOUT: 标准 GKI 双仓（kernel_platform/common 存在）"
+            echo "SINGLE_TREE_DIR=" >> "$GITHUB_ENV"
           fi
-          echo "LAYOUT_OK: 双仓 GKI 布局，继续"
           echo "MANIFEST_REPO=$FOUND_REPO" >> "$GITHUB_ENV"
           echo "MANIFEST_REPO_NAME=$FOUND_REPO_NAME" >> "$GITHUB_ENV"
           echo "MANIFEST_BRANCH=$FOUND_BRANCH" >> "$GITHUB_ENV"
@@ -529,6 +543,20 @@ jobs:
           repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
           sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
           repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
+
+          # 单仓布局（MTK）在这里接上：kernel_platform/common -> ../kernel-<ver>。
+          # 只有接上并且接对了才继续 —— 后面有 6 处无条件步骤直接 cd kernel_platform/common
+          # 改 defconfig / 钉版本串，接错就等于 SUSFS 与钉串静默落空。
+          # 所以接完立刻验：Makefile 与 drivers/ 必须真的透过这条软链可见。
+          if [ -n "${SINGLE_TREE_DIR:-}" ]; then
+            echo "单仓布局：建软链 kernel_platform/common -> ../$SINGLE_TREE_DIR"
+            mkdir -p kernel_platform
+            rm -rf kernel_platform/common
+            ln -sfn "../$SINGLE_TREE_DIR" kernel_platform/common
+            [ -f kernel_platform/common/Makefile ] || { echo "::error::软链接过去了但 kernel_platform/common/Makefile 不可见（$SINGLE_TREE_DIR 里没有内核？）"; exit 1; }
+            [ -d kernel_platform/common/drivers ] || { echo "::error::软链接过去了但 drivers/ 不可见，KernelSU setup.sh 会找不到落点"; exit 1; }
+            echo "✅ 单仓布局已接上：$(grep -m1 '^VERSION' kernel_platform/common/Makefile | tr -d '\n') $(grep -m1 '^PATCHLEVEL' kernel_platform/common/Makefile | tr -d '\n')"
+          fi
 
           KERNEL_REPOS=""
           KERNEL_REPOS_PATH=$(find . -type f -name "build.config.msm.common" | head -n 1)
