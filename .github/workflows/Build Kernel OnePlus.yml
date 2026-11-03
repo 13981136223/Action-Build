@@ -868,7 +868,34 @@ jobs:
           if [ "${{ github.event.inputs.SUSFS_META }}" != "-1" ]; then
             echo "正在打susfs补丁"
             kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsContext.kts" "$PWD" "$PWD/50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch"
-            patch -p1 < 50_add_susfs_in_gki-${{ env.KANDROID_VERSION }}-${{ env.KERNEL_VERSION }}.patch || true
+            # SUSFS_FUZZ_PLAN 起：6.12 线之前必挂 —— 本地拿 OnePlusOSS sm8850 真源码
+            # (oneplus/sm8850_b_16.0.0_oneplus_15) 复现过：fs/exec.c 1/4 hunk 失败
+            # （就是那三行 #include <linux/susfs_def.h>），fs/proc/task_mmu.c 3/8 失败
+            # （show_smap / smaps_rollup / pagemap 的隐藏钩子）。默认 fuzz 不够，
+            # `-F 3` 实测两个文件 8/8、4/4 全部干净应用、不留 .rej。
+            # 所以按 fuzz 0 → 2 → 3 逐级 dry-run 试探，选第一个能零 reject 的档位，
+            # 而不是老实地 `|| true` 把缺的钩子吞掉（钩子少了 = 隐藏面漏了，还看不出来）。
+            SUSFS_PATCH="50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch"
+            SUSFS_FUZZ=""
+            for FZ in 0 2 3; do
+              if patch -p1 --dry-run -F "$FZ" < "$SUSFS_PATCH" >/dev/null 2>&1; then
+                SUSFS_FUZZ="$FZ"; break
+              fi
+            done
+            if [ -n "$SUSFS_FUZZ" ]; then
+              echo "SUSFS 补丁按 fuzz=$SUSFS_FUZZ 可零 reject 应用"
+              patch -p1 -F "$SUSFS_FUZZ" < "$SUSFS_PATCH" || true
+            else
+              echo "::warning::连 fuzz=3 都做不到零 reject，按 fuzz=3 强打，缺什么由后面的 include 修复与符号闸门点名"
+              patch -p1 -F 3 < "$SUSFS_PATCH" || true
+            fi
+            # 打完当场核一遍：还有 .rej 就点名（不等到编译失败再回头猜）
+            LEFT=$(find fs kernel mm security -name '*.rej' 2>/dev/null | head -5)
+            if [ -n "$LEFT" ]; then
+              echo "::warning::SUSFS 补丁仍留下 .rej：$(echo $LEFT | tr '\n' ' ')"
+            else
+              echo "SUSFS 补丁应用后无 .rej"
+            fi
             echo "susfs_patch完成"
           fi
           source $REJ_CHECKER
