@@ -879,6 +879,60 @@ jobs:
             kotlin "$GITHUB_WORKSPACE/kernel_workspace/Action-Build/scripts/SusfsCompat.kts" revert "$PWD"
           fi
 
+      - name: Repair rejected SUSFS include hunks
+        if: ${{ github.event.inputs.SUSFS_META != '-1' }}
+        run: |
+          # run 41543246097（oneplus_15，android16-6.12 线）报
+          #   fs/exec.c:1949: error: call to undeclared function 'susfs_is_current_proc_no_su'
+          # 同一份日志里还有 "1 out of 4 hunks FAILED -- saving rejects to file fs/exec.c.rej"：
+          # 失败的那一 hunk 正是补丁给 exec.c 加的 `#include <linux/susfs_def.h>`。
+          # 调用点全打上了、头没进去 → C99 把隐式声明当错误；而补丁是 `|| true` 应用所以不拦。
+          # 6.1/6.6 上不报，是因为那两个分支的 exec.c 上下文刚好能对上 —— 所以这是
+          # "按 KMI 线各跑一遍才知道"的坑，不是通用结论。
+          # 做法：按补丁原文取出"它给哪些文件加过 susfs 头"，逐文件核对，缺就插到该文件
+          # 最后一条 #include 之后；修完再硬断一次"调用 no_su 却没头"的文件必须为 0。
+          set -e
+          cd "$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/common"
+          PATCH="50_add_susfs_in_gki-${KANDROID_VERSION}-${KERNEL_VERSION}.patch"
+          if [ ! -f "$PATCH" ]; then echo "本轮没有 $PATCH（SUSFS 关闭？），跳过 include 修复"; exit 0; fi
+          CUR=""; FIXED=0; SEEN=0
+          while IFS= read -r line; do
+            case "$line" in
+              'diff --git a/'*) CUR=$(printf '%s' "$line" | sed -E 's|^diff --git a/[^ ]+ b/||') ;;
+            esac
+            case "$line" in
+              '+#include <linux/susfs'*)
+                H=$(printf '%s' "$line" | sed -E 's/^\+//')
+                [ -n "$CUR" ] || continue
+                [ -f "$CUR" ] || { echo "  补丁要改的文件不在树里，跳过: $CUR"; continue; }
+                SEEN=$((SEEN+1))
+                if grep -qF "$H" "$CUR"; then continue; fi
+                LN=$(grep -n '^#include' "$CUR" | tail -1 | cut -d: -f1)
+                if [ -z "$LN" ]; then LN=0; fi
+                { head -n "$LN" "$CUR"; printf '%s\n' "$H"; tail -n +"$((LN+1))" "$CUR"; } > "$CUR.akfix"
+                mv "$CUR.akfix" "$CUR"
+                grep -qF "$H" "$CUR" || { echo "::error::插完又找不到 $H（$CUR）"; exit 1; }
+                echo "  补回 include: $CUR ← $H（原第 $LN 行后）"
+                FIXED=$((FIXED+1))
+                ;;
+            esac
+          done < "$PATCH"
+          echo "SUSFS include 核对 $SEEN 处，实际补回 $FIXED 处"
+          BAD=""
+          for F in $(grep -rlE 'susfs_(is|set|clear)_current_proc_no_su' --include='*.c' . --exclude-dir=out --exclude-dir=.git 2>/dev/null); do
+            # susfs.h 自己 include 了 susfs_def.h，所以两个头任一在场都算有声明
+            grep -qE '#include <linux/susfs(_def)?\.h>' "$F" || BAD="$BAD $F"
+          done
+          [ -z "$BAD" ] || { echo "::error::这些文件调用 no_su 却没有 include susfs 头：$BAD"; exit 1; }
+          # 已经人工修好的 .rej 清掉，别让后面的 reject 检查把"修好了"当成"还没修"
+          for R in $(find . -maxdepth 3 -name '*.c.rej' 2>/dev/null); do
+            B=$(basename "$R" .rej)
+            if grep -q 'susfs' "$R" && grep -q 'include <linux/susfs' "$R"; then
+              rm -f "$R"; echo "  清掉已修复的 $R"
+            fi
+          done
+          echo "✅ SUSFS include 修复与硬断通过（这条线现在能编）"
+
       # OGKI转换GKI，无需修改 dtbo 开机
       - name: Apply Convert HMBIRD_OGKI to HMBIRD_GKI
         if: ${{ (fromJSON(env.VERSIONLEVEL) > 6 || (fromJSON(env.VERSIONLEVEL) == 6 && fromJSON(env.PATCHLEVEL) >= 6) || github.event.inputs.FORCE_DTFLIP == 'true') && github.event.inputs.SCHED_HMBIRD == 'false' }}
