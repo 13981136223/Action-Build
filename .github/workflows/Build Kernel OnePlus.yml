@@ -2054,11 +2054,15 @@ jobs:
           #   force_hide_lsposed / auto_try_umount / skip_legit_mounts
           #     （后两条是「卸掉的模块别留挂载」+「别误卸正经挂载」；内核没有
           #      CONFIG_KSU_SUSFS_TRY_UMOUNT 时模块自己会跳过/复位，不会坏事）
+          #   avc_log_spoofing=1 —— 这条不是空转：`susfs_set_avc_log_spoofing` 在
+          #     fs/susfs.c 里**没有任何 Kconfig 守卫**，且 SukiSU 的 supercall/dispatch.c
+          #     确实 wire 了它（同表还有 set_uname / set_cmdline_or_bootconfig /
+          #     set_priority_uid_filter / add_sus_path…共 16 个入口）。模块注释写明它
+          #     用来绕开「靠 /proc/<pid> 枚举发现 su 域」，是主要探测面之一。
           # 关：
           #   susfs_log=0                        少一处日志指纹
           #   spoof_uname=0                      我们的内核串本来就钉成原厂值，伪造成
           #                                      另一个值只会造出 osrelease 与 banner 不一致的新破绽
-          #   avc_log_spoofing=0                 SukiSU 的 Kconfig 没有这个开关，开了也是空转
           #   hide_gapps / hide_revanced=0       国行机没这些包，纯属多余挂载操作
           #   umount_for_zygote_iso_service=0 emulate_vold_app_data=0  收益不明、动的是别人的挂载
           set -e
@@ -2070,7 +2074,7 @@ jobs:
           unzip -q "$M" -d susmod
           C=$(find susmod -maxdepth 2 -type f -name config.sh | head -n 1)
           [ -n "$C" ] || { echo "::error::模块里没有 config.sh，无法核对隐藏开关"; exit 1; }
-          PAIRS="hide_loops=1 hide_vendor_sepolicy=1 hide_compat_matrix=1 hide_cusrom=1 spoof_cmdline=1 hide_sus_mnts_for_all_or_non_su_procs=1 force_hide_lsposed=1 auto_try_umount=1 skip_legit_mounts=1 susfs_log=0 spoof_uname=0 avc_log_spoofing=0 hide_gapps=0 hide_revanced=0 umount_for_zygote_iso_service=0 emulate_vold_app_data=0"
+          PAIRS="hide_loops=1 hide_vendor_sepolicy=1 hide_compat_matrix=1 hide_cusrom=1 spoof_cmdline=1 hide_sus_mnts_for_all_or_non_su_procs=1 force_hide_lsposed=1 auto_try_umount=1 skip_legit_mounts=1 avc_log_spoofing=1 susfs_log=0 spoof_uname=0 hide_gapps=0 hide_revanced=0 umount_for_zygote_iso_service=0 emulate_vold_app_data=0"
           echo "=== 改前 ==="; grep -E '^[a-z_0-9]+=' "$C"
           for P in $PAIRS; do
             K=${P%%=*}; V=${P##*=}
@@ -2110,7 +2114,7 @@ jobs:
           a=zipfile.ZipFile(r'''$M'''.replace(chr(92),'/'))
           n=[x for x in a.namelist() if x.endswith('config.sh')][0]
           t=a.read(n).decode('utf-8','replace')
-          need=['hide_loops=1','hide_cusrom=1','hide_vendor_sepolicy=1','hide_compat_matrix=1','spoof_cmdline=1','susfs_log=0','spoof_uname=0']
+          need=['hide_loops=1','hide_cusrom=1','hide_vendor_sepolicy=1','hide_compat_matrix=1','spoof_cmdline=1','avc_log_spoofing=1','susfs_log=0','spoof_uname=0']
           bad=[k for k in need if k not in t]
           if bad:
               print('重打包后缺键:', ' '.join(bad))
