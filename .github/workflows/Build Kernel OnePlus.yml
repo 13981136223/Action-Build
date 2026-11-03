@@ -324,6 +324,22 @@ jobs:
             echo "❌ 无法在任何仓库中找到 ${FILE}.xml"
             exit 8
           fi
+          # 布局闸门：本流水线整条链是按 GKI 双仓布局写的 —— KMI 从
+          # kernel_platform/common 的 build.config 取、susfs/KernelSU 补丁与 defconfig
+          # 全在 kernel_platform/common 里操作，SukiSU 的 setup.sh 也只认
+          # \$GKI_ROOT/common/drivers 或 \$GKI_ROOT/drivers。
+          # 实测 MTK 那 17 台（mt6789/mt6833/mt6878/mt6897/mt6989/mt6991/mt6993）的
+          # manifest 里**根本没有 kernel_platform/common**，内核是单仓
+          # path="kernel-6.6" 这种布局 —— 继续跑的结果不是报错，而是
+          # setup.sh 找不到 drivers/ 就静默不接 KernelSU，烧完 30-40 分钟产出一个
+          # 没有 SU/SUSFS 的"看起来成功"的包。所以在这里当场停下，并说清缺什么。
+          if ! grep -q 'path="kernel_platform/common"' "$XML_PATH"; then
+            KPATH=$(grep -o 'path="kernel-[0-9.]*"' "$XML_PATH" | head -n 1)
+            echo "::error::这台机型的 manifest 没有 kernel_platform/common（单仓布局 ${KPATH:-未知}），本流水线不支持它"
+            echo "MTK_UNSUPPORTED_LAYOUT: ${FILE} —— 要支持得单独写 MTK 集成路径（内核目录、补丁落点、setup.sh 的 GKI_ROOT 都要换）"
+            exit 9
+          fi
+          echo "LAYOUT_OK: 双仓 GKI 布局，继续"
           echo "MANIFEST_REPO=$FOUND_REPO" >> "$GITHUB_ENV"
           echo "MANIFEST_REPO_NAME=$FOUND_REPO_NAME" >> "$GITHUB_ENV"
           echo "MANIFEST_BRANCH=$FOUND_BRANCH" >> "$GITHUB_ENV"
