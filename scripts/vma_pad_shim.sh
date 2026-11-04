@@ -59,8 +59,17 @@ for TM in $(find -L "$WS" -type f -path '*/fs/proc/task_mmu.c' 2>/dev/null); do
   fi
   NOTE=""
   if [ -n "$HDR" ]; then
-    NOTE="[已补 include] $TM ← <linux/pgsize_migration.h>"
-    { head -n 1 "$TM"; printf '#include <linux/pgsize_migration.h>\n'; tail -n +2 "$TM"; } > "$TM.ksushim2"
+    # 头里如果是 extern（CONFIG 打开），说明符号要有定义；而实测该树 mm/pgsize_migration.c
+    # 没被编进来 → 链接报 undefined symbol。此时在本 TU 里给一个返回 0 的定义即可
+    # （与头里 CONFIG 关闭时的 static inline 语义相同）。头里是 static inline 的树不加。
+    DEF=""
+    if grep -q 'extern unsigned long vma_pad_pages' "$HDR"; then
+      DEF='unsigned long vma_pad_pages(struct vm_area_struct *vma) { return 0; }'
+      NOTE="[已补 include+定义] $TM ← <linux/pgsize_migration.h>（该树 extern 无实现）"
+    else
+      NOTE="[已补 include] $TM ← <linux/pgsize_migration.h>"
+    fi
+    { head -n 1 "$TM"; printf '#include <linux/pgsize_migration.h>\n'; [ -n "$DEF" ] && printf '%s\n' "$DEF"; tail -n +2 "$TM"; } > "$TM.ksushim2"
   else
     NOTE="[已补宏] $TM（树里没有 pgsize_migration.h）"
     { head -n 1 "$TM"; printf '#ifndef vma_pad_pages\n#define vma_pad_pages(vma) 0UL\n#endif\n'; tail -n +2 "$TM"; } > "$TM.ksushim2"
