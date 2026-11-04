@@ -46,4 +46,22 @@ for K in $(find -L "$KP" -type f \( -name Makefile -o -name Kbuild \) -path '*/d
   if [ ! -f "$D" ]; then echo "::error::$K 引用 runner 但 $D 不在"; miss=1; fi
 done
 [ "$miss" = "0" ] || exit 1
+# 关键：make 报的是 "../../drivers/kernelsu/preinit/runner/runner.c"，而 make[5] 的工作目录是
+# 输出树 $O/drivers/kernelsu/preinit —— 从那儿数 ../../ 落回 $O/drivers/...，也就是它要的是
+# **out 树里**的 runner.c（run 41738160219：源树里已备好、保障步的硬断也过了，make 仍说 No rule）。
+# 所以同一份 runner.c 也要铺到对应的 out 路径（out 目录此刻可以不存在，mkdir -p 建出来即可）。
+for PRE in $(find -L "$KP" -type d -path '*/drivers/kernelsu/preinit' 2>/dev/null); do
+  [ -f "$PRE/runner/runner.c" ] || continue
+  TOP=${PRE%/drivers/kernelsu/preinit}          # 该树的根（common/ 或 kernel-6.12/）
+  OUT="$TOP/out/drivers/kernelsu/preinit/runner"
+  if [ -f "$OUT/runner.c" ]; then
+    echo "[out 树已有] $OUT/runner.c"
+  elif mkdir -p "$OUT" 2>/dev/null && cp -rL "$PRE/runner/." "$OUT/" 2>/dev/null; then
+    echo "[铺到 out 树] $PRE/runner/runner.c → $OUT/runner.c"
+  else
+    echo "::error::铺不进 $OUT"
+    exit 1
+  fi
+done
+
 echo "ENSURE_PREINIT: 补齐 $fixed 处，引用与文件全部对得上"
