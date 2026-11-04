@@ -288,9 +288,20 @@ jobs:
           fi
           CVLINE=$(grep -m1 "^${FILE}|" "$CVT" || true)
           if [ -n "$CVLINE" ]; then
-            IFS='|' read -r C_NAME C_KIND C_SRC C_CPU C_ANDROID C_MAJOR C_LABEL <<EOF
-          $CVLINE
-          EOF            echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
+            # 不用 heredoc 拆字段：这段在 YAML 块标量里换行会被吞，bash 收不到 EOF 就
+            # 整步语法错误（run 41930710156 栽在这）。逐段 cut 最稳。
+            C_NAME=$(printf '%s' "$CVLINE" | cut -d'|' -f1)
+            C_KIND=$(printf '%s' "$CVLINE" | cut -d'|' -f2)
+            C_SRC=$(printf '%s' "$CVLINE" | cut -d'|' -f3)
+            C_CPU=$(printf '%s' "$CVLINE" | cut -d'|' -f4)
+            C_ANDROID=$(printf '%s' "$CVLINE" | cut -d'|' -f5)
+            C_MAJOR=$(printf '%s' "$CVLINE" | cut -d'|' -f6)
+            C_LABEL=$(printf '%s' "$CVLINE" | cut -d'|' -f7)
+            for CVK in C_NAME C_KIND C_SRC C_CPU C_ANDROID C_MAJOR C_LABEL; do
+              CVV=$(eval echo \$$CVK)
+              [ -n "$CVV" ] || { echo "::error::跨厂源码表里 $CVLINE 的 $CVK 列是空的"; exit 1; }
+            done
+            echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
             echo "CROSSVENDOR=1" >> $GITHUB_ENV
             echo "CV_KIND=$C_KIND" >> $GITHUB_ENV
             echo "CV_SRC=$C_SRC" >> $GITHUB_ENV
