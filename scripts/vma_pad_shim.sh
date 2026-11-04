@@ -50,23 +50,32 @@ fi
 PATCHED=0
 for TM in $(find -L "$WS" -type f -path '*/fs/proc/task_mmu.c' 2>/dev/null); do
   grep -q 'VMA_PAD_START(' "$TM" || continue
-  grep -q 'define vma_pad_pages' "$TM" && { echo "[已有宏] $TM"; continue; }
-  if has_real_impl; then echo "[跳过] 全树已有 vma_pad_pages 实现：$TM"; continue; fi
-  {
-    head -n 1 "$TM"
-    printf '#ifndef vma_pad_pages\n#define vma_pad_pages(vma) 0UL\n#endif\n'
-    tail -n +2 "$TM"
-  } > "$TM.ksushim2" && mv "$TM.ksushim2" "$TM"
-  grep -q 'define vma_pad_pages' "$TM" || { echo "::error::补宏失败 $TM"; exit 1; }
-  echo "[已补宏] $TM（$(wc -c < "$TM") B）"
+  grep -q 'pgsize_migration' "$TM" && { echo "[已包含 pgsize 头] $TM"; continue; }
+  # 首选：树里自带 include/linux/pgsize_migration.h（实测 mt6991/sm8755 系都有），
+  # 它按 CONFIG 给出 extern 或返回 0 的 static inline —— 直接用，签名不用猜。
+  HDR=$(find -L "$WS" -type f -path '*/include/linux/pgsize_migration.h' 2>/dev/null | head -1)
+  if [ -n "$HDR" ]; then
+    grep -q 'vma_pad_pages' "$HDR" || { echo "::warning::$HDR 里没有 vma_pad_pages，退回宏方案"; HDR=""; }
+  fi
+  NOTE=""
+  if [ -n "$HDR" ]; then
+    NOTE="[已补 include] $TM ← <linux/pgsize_migration.h>"
+    { head -n 1 "$TM"; printf '#include <linux/pgsize_migration.h>\n'; tail -n +2 "$TM"; } > "$TM.ksushim2"
+  else
+    NOTE="[已补宏] $TM（树里没有 pgsize_migration.h）"
+    { head -n 1 "$TM"; printf '#ifndef vma_pad_pages\n#define vma_pad_pages(vma) 0UL\n#endif\n'; tail -n +2 "$TM"; } > "$TM.ksushim2"
+  fi
+  mv "$TM.ksushim2" "$TM"
+  grep -qE 'pgsize_migration|define vma_pad_pages' "$TM" || { echo "::error::补丁未落地 $TM"; exit 1; }
+  echo "$NOTE（$(wc -c < "$TM") B）"
   PATCHED=1
 done
-[ "$PATCHED" = "1" ] || echo "VMA_PAD_SHIM: 未触发 task_mmu.c 补宏（不需要）"
+[ "$PATCHED" = "1" ] || echo "VMA_PAD_SHIM: 未触发 task_mmu.c 补丁（不需要）"
 
-# ---- 阶段三：写一个 -include 头，交给编译期最前面展开 ----
-# migration_inline.h 在部分树里是编译期才出现的，开编前改不到它；-include 不依赖它的位置，
-# 只要全树没有真实现（上面已查）就安全。FAST 步骤会读这个标记并把它加进 KCFLAGS。
-if ! has_real_impl; then
+# ---- 阶段三：树里没有 pgsize_migration.h 时才用 -include 宏兜底 ----
+# 有那头的树已经在阶段二 include 进来了，再补宏会跟真实 inline 撞定义，所以这里必须互斥。
+PGHDR=$(find -L "$WS" -type f -path '*/include/linux/pgsize_migration.h' 2>/dev/null | head -1)
+if [ -z "$PGHDR" ] && ! has_real_impl; then
   HDR="$WS/.ksu_vma_pad_include.h"
   printf '/* injected by vma_pad_shim.sh */\n#ifndef vma_pad_pages\n#define vma_pad_pages(vma) 0UL\n#endif\n' > "$HDR"
   echo "$HDR" > "$WS/.ksu_vma_pad_include"
