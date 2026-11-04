@@ -208,11 +208,19 @@ fun applyPostPatchFixups() {
                 listOf(
                     "#ifndef VMA_PAD_START",
                     "#define VMA_PAD_START(vma) ((vma)->vm_end)",
+                    "#endif",
+                    // 同一棵树里 migration_inline.h（第 45 行）会把这个宏重新定义成
+                    // `(vma->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))`，而这棵树没有
+                    // vma_pad_pages 的实现 —— 实测 mt6897_v：warning 宏重定义 + `error: call to
+                    // undeclared function 'vma_pad_pages'`，整条构建死。用函数式宏补成 0，
+                    // 展开结果与上面那条 #define 逐字等价，且不需要类型声明、放文件头也安全。
+                    "#ifndef vma_pad_pages",
+                    "#define vma_pad_pages(vma) 0UL",
                     "#endif"
                 )
             )
             taskMmu.writeText(lines.joinToString("\n") + "\n")
-            logPostfix(taskMmu, "inserted fallback macro '#define VMA_PAD_START(vma) ((vma)->vm_end)' guarded by #ifndef, because VMA_PAD_START() is used but neither pgsize_migration(_inline).h is included nor the macro is defined on this baseline")
+            logPostfix(taskMmu, "inserted fallback macro '#define VMA_PAD_START(vma) ((vma)->vm_end)' + '#define vma_pad_pages(vma) 0UL' guarded by #ifndef, because VMA_PAD_START() is used but neither pgsize_migration(_inline).h is included nor the macro is defined on this baseline")
         }
 
         val content2 = taskMmu.readText()
