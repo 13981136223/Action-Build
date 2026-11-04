@@ -1262,6 +1262,12 @@ jobs:
             dos2unix "fengchi_${CLEAN_FILE}.patch"
             if ! patch -p1 --dry-run -F 3 < "fengchi_${CLEAN_FILE}.patch" >/dev/null 2>&1; then
               echo "::warning::FENGCHI_SKIP: fengchi_${CLEAN_FILE}.patch 与该机型树不匹配（dry-run 有 hunk 失败），本轮不带风驰继续构建"
+              # 诊断证据：到底是哪几个 hunk 失败、补丁想改哪些文件。没有这段就只能瞎猜。
+              echo "--- FENGCHI_DIAG_BEGIN ---"
+              patch -p1 --dry-run -F 3 --verbose < "fengchi_${CLEAN_FILE}.patch" 2>&1 | grep -iE "hunk|failed|succeeded|patching file" | head -40 || true
+              echo "--- FENGCHI_DIAG_FILES ---"
+              grep '^+++' "fengchi_${CLEAN_FILE}.patch" | head -20 || true
+              echo "--- FENGCHI_DIAG_END ---"
               echo "FENGCHI_VERDICT: 未生效（补丁不适配，已降级）"
               exit 0
             fi
