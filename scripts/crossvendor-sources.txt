@@ -1,0 +1,12 @@
+# 跨厂公开内核源表（OPPO / 真我 / 小米 / 联想 / 红魔），只收内核 ≥6.1 的树。
+# 每行 7 段，竖线分隔：
+#   FILE|KIND|SRC|CPU|ANDROID(完整大版本)|ANDROID_MAJOR|LABEL
+#   KIND=git  → SRC=owner/repo@分支（分支里可以带 /）
+#   KIND=tar  → SRC=https://…/xxx.tar.gz（解出来必须含内核根）
+# LABEL 只用于包名/产物名；FILE 是 dispatch 时传的键，必须与 workflow 的 FILE 选项一致。
+# 内核小版本不写在这里：CI 里由 scripts/fetch_crossvendor_source.sh 从 Makefile 实测，
+# 台账也用实测值，避免手填错。
+cv_oppo_sm8750_b16|git|oppo-source/android_kernel_common_oppo_sm8750@oppo/sm8750_b_16.0.0_find_n5|sm8750|16.0.0|16|OPPO_sm8750_通用
+cv_oppo_sm8650_b16|git|oppo-source/android_kernel_common_oppo_sm8650@oppo/sm8650_b_16.0.0_pad_3_pro|sm8650|16.0.0|16|OPPO_sm8650_通用
+cv_realme_gt8_b16|git|realme-kernel-opensource/realme_GT8-AndroidB-common-source@master|sm8750|16.0.0|16|realme_GT8_通用
+cv_lenovo_y700_66118|tar|https://github.com/showdo/Build_Lenovo_sm8750/releases/download/common/2026-01.tar.gz|sm8750|15.0.0|15|Lenovo_Y700_通用
