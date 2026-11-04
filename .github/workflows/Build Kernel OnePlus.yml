@@ -1951,6 +1951,14 @@ jobs:
 
           # KCFLAGS
           KCFLAGS="$MAP $FPMAP -no-canonical-prefixes -O2 -pipe -Wno-error -fno-stack-protector -D__ANDROID_COMMON_KERNEL__"
+          # mt6897 的 migration_inline.h 是编译期才出现的，开编前打不到；用 -include 在编译单元最前面
+          # 注入 vma_pad_pages 兜底宏。只有全树没有真实现时 vma_pad_shim 才会写这个标记。
+          if [ -f "$GITHUB_WORKSPACE/kernel_workspace/.ksu_vma_pad_include" ]; then
+            HDR=$(cat "$GITHUB_WORKSPACE/kernel_workspace/.ksu_vma_pad_include")
+            [ -f "$HDR" ] || { echo "::error::vma_pad include 标记指向的头不存在：$HDR"; exit 1; }
+            KCFLAGS="$KCFLAGS -include $HDR"
+            echo "[开编前] 已注入 -include $HDR（vma_pad_pages 兜底）"
+          fi
           KCPPFLAGS="$MPMAP"
 
           MAKE_ARGS=(
