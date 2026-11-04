@@ -1777,6 +1777,14 @@ jobs:
           ENS="/tmp/ensure_preinit_runner.sh"
           curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/ensure_preinit_runner.sh" -o "$ENS"             || { echo "::error::取不到 ensure_preinit_runner.sh"; exit 1; }
           bash "$ENS" "$GITHUB_WORKSPACE/kernel_workspace" || exit 1
+          # 同类问题另一处：MTK 6.1 树里 rekernel 的 migration_inline.h 引用了这台树没有的
+          # vma_pad_pages()，开编即死（run 41773162751 / oneplus_pad_mt6897_v）。
+          # 补一个返回 0 的 inline —— 与这棵树自己 VMA_PAD_START 的上一处定义 ((vma)->vm_end) 等价，
+          # 有真定义的树脚本会自己识别并一个字节都不改。
+          VPS="/tmp/vma_pad_shim.sh"
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/vma_pad_shim.sh" -o "$VPS"             || { echo "::error::取不到 vma_pad_shim.sh"; exit 1; }
+          grep -q 'KSU_VMA_PAD_PAGES_SHIM' "$VPS" || { echo "::error::取回的 vma_pad_shim.sh 内容不对"; exit 1; }
+          bash "$VPS" "$GITHUB_WORKSPACE/kernel_workspace" || exit 1
 
       - name: Build Kernel FAST
         if: ${{ github.event.inputs.FAST_BUILD == 'true' }}
