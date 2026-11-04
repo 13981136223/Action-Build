@@ -63,4 +63,16 @@ for TM in $(find -L "$WS" -type f -path '*/fs/proc/task_mmu.c' 2>/dev/null); do
 done
 [ "$PATCHED" = "1" ] || echo "VMA_PAD_SHIM: 未触发 task_mmu.c 补宏（不需要）"
 
+# ---- 阶段三：写一个 -include 头，交给编译期最前面展开 ----
+# migration_inline.h 在部分树里是编译期才出现的，开编前改不到它；-include 不依赖它的位置，
+# 只要全树没有真实现（上面已查）就安全。FAST 步骤会读这个标记并把它加进 KCFLAGS。
+if ! has_real_impl; then
+  HDR="$WS/.ksu_vma_pad_include.h"
+  printf '/* injected by vma_pad_shim.sh */\n#ifndef vma_pad_pages\n#define vma_pad_pages(vma) 0UL\n#endif\n' > "$HDR"
+  echo "$HDR" > "$WS/.ksu_vma_pad_include"
+  echo "[-include 标记] $WS/.ksu_vma_pad_include → $HDR"
+else
+  rm -f "$WS/.ksu_vma_pad_include" 2>/dev/null || true
+fi
+
 echo "VMA_PAD_SHIM: 完成"
