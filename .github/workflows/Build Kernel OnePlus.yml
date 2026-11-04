@@ -107,12 +107,89 @@ on:
           - oneplus_ace_6t_Canary
           - oneplus_pad_3_pro_Canary
           - oneplus_pad_4_Canary
+          # 跨厂（OPPO/真我/小米/联想/红魔）：FILE 命中 scripts/crossvendor-sources.txt 即走摊平路径
+          - cv_oppo_mt6769_66
+          - cv_oppo_mt6789_612
+          - cv_oppo_mt6833_66
+          - cv_oppo_mt6877_66
+          - cv_oppo_mt6878_61
+          - cv_oppo_mt6896_612
+          - cv_oppo_mt6897_61
+          - cv_oppo_mt6899_66
+          - cv_oppo_mt6989_61
+          - cv_oppo_mt6991_66
+          - cv_oppo_mt6993_612
+          - cv_oppo_sm6375_61
+          - cv_oppo_sm6450_66
+          - cv_oppo_sm6650_61
+          - cv_oppo_sm7750_66
+          - cv_oppo_sm8650_61
+          - cv_oppo_sm8735_66
+          - cv_oppo_sm8750_66
+          - cv_oppo_sm8845_611
+          - cv_oppo_sm8845_612
+          - cv_oppo_sm8850_611
+          - cv_oppo_sm8850_612
+          - cv_realme_realme_14proplus_61
+          - cv_realme_realme_15pro5g_66
+          - cv_realme_realme_16proplus_5g_66
+          - cv_realme_realme_gt5pro_61
+          - cv_realme_realme_gt6_61
+          - cv_realme_realme_gt7pro_66
+          - cv_realme_realme_gt7pro_speed_66
+          - cv_realme_realme_gt8_66
+          - cv_realme_realme_gt8pro_612
+          - cv_realme_realme_gtneo6_gtneo6se_61
+          - cv_realme_realme_gtneo6_61
+          - cv_realme_realme_neo8_612
+          - cv_realme_realme_p3pro_61
+          - cv_realme_realme_p4pro_5g_66
+          - cv_xiaomi_annibale_66
+          - cv_xiaomi_aurora_61
+          - cv_xiaomi_bixi_66
+          - cv_xiaomi_chagall_66
+          - cv_xiaomi_chenfeng_61
+          - cv_xiaomi_dada_66
+          - cv_xiaomi_dali_66
+          - cv_xiaomi_dash_66
+          - cv_xiaomi_degas_61
+          - cv_xiaomi_dew_66
+          - cv_xiaomi_duchamp_61
+          - cv_xiaomi_flare_66
+          - cv_xiaomi_flourite_61
+          - cv_xiaomi_goya_66
+          - cv_xiaomi_klee_66
+          - cv_xiaomi_klimt_66
+          - cv_xiaomi_kunzite_66
+          - cv_xiaomi_lapis_61
+          - cv_xiaomi_malachite_61
+          - cv_xiaomi_manet_61
+          - cv_xiaomi_miro_66
+          - cv_xiaomi_mist_66
+          - cv_xiaomi_muyu_61
+          - cv_xiaomi_onyx_66
+          - cv_xiaomi_peridot_61
+          - cv_xiaomi_piano_66
+          - cv_xiaomi_popsicle_611
+          - cv_xiaomi_prague_612
+          - cv_xiaomi_rodin_66
+          - cv_xiaomi_rothko_61
+          - cv_xiaomi_shennong_61
+          - cv_xiaomi_spark_66
+          - cv_xiaomi_spring_61
+          - cv_xiaomi_uke_61
+          - cv_xiaomi_warm_61
+          - cv_xiaomi_warsaw_66
+          - cv_xiaomi_xuanyuan_66
+          - cv_xiaomi_yili_612
+          - cv_xiaomi_yupei_66
+          - cv_xiaomi_zorn_61
+          - cv_lenovo_y700_66118
+          - cv_lenovo_y700_612
+          - cv_nubia_sm8650_61
+          - cv_nubia_sm8850_612
           # 跨厂（OPPO/真我/联想）通用包：FILE 命中 scripts/crossvendor-sources.txt 时
           # 不走一加 manifest，改成摊平公开 common 快照（见 Extract Manifest Info 的跨厂分支）
-          - cv_oppo_sm8750_b16
-          - cv_oppo_sm8650_b16
-          - cv_realme_gt8_b16
-          - cv_lenovo_y700_66118
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
@@ -297,10 +374,12 @@ jobs:
             C_ANDROID=$(printf '%s' "$CVLINE" | cut -d'|' -f5)
             C_MAJOR=$(printf '%s' "$CVLINE" | cut -d'|' -f6)
             C_LABEL=$(printf '%s' "$CVLINE" | cut -d'|' -f7)
-            for CVK in C_NAME C_KIND C_SRC C_CPU C_ANDROID C_MAJOR C_LABEL; do
+            for CVK in C_NAME C_KIND C_SRC C_ANDROID C_MAJOR C_LABEL; do
               CVV=$(eval echo \$$CVK)
               [ -n "$CVV" ] || { echo "::error::跨厂源码表里 $CVLINE 的 $CVK 列是空的"; exit 1; }
             done
+            # C_CPU 允许为空：真我/小米的公开 common 快照里认不出 SoC，宁可少一项闸门也不猜
+            if [ -z "$C_CPU" ]; then echo "跨厂表：$C_NAME 没确认 SoC，闸门只核 KMI/安卓/机型"; C_CPU=''; fi
             echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
             echo "CROSSVENDOR=1" >> $GITHUB_ENV
             echo "CV_KIND=$C_KIND" >> $GITHUB_ENV
@@ -2364,10 +2443,19 @@ jobs:
           [ -f anykernel.sh ] || { echo "::error::没有 anykernel.sh"; exit 1; }
           sed -i '/Powered by GitHub/Id' anykernel.sh
           sed -i '/^## KernelSU with SUSFS By Numbersf/d' anykernel.sh
-          sed -i 's#^kernel\.string=.*#kernel.string=OnePlus Kernel by 汐颜#' anykernel.sh
+          BRAND='OnePlus'
+          case "${{ github.event.inputs.FILE }}" in
+            cv_oppo_*)   BRAND='OPPO' ;;
+            cv_realme_*) BRAND='realme' ;;
+            cv_xiaomi_*) BRAND='Xiaomi' ;;
+            cv_lenovo_*) BRAND='Lenovo' ;;
+            cv_nubia_*)  BRAND='REDMAGIC' ;;
+          esac
+          echo "包内署名品牌：$BRAND（跨厂包不能印 OnePlus）"
+          sed -i "s#^kernel\\.string=.*#kernel.string=$BRAND Kernel by 汐颜#" anykernel.sh
           grep -qi 'powered by github' anykernel.sh && { echo "::error::宣传行没删干净"; exit 1; }
           grep -q 'osm0sis' anykernel.sh || { echo "::error::BSD 要求保留的版权行被误删"; exit 1; }
-          grep -q '^kernel.string=OnePlus Kernel by 汐颜' anykernel.sh || { echo "::error::kernel.string 没换成汐颜"; exit 1; }
+          grep -q "^kernel.string=$BRAND Kernel by 汐颜" anykernel.sh || { echo "::error::kernel.string 没换成汐颜"; exit 1; }
           sh -n anykernel.sh || { echo "::error::改完语法不过"; exit 1; }
           echo "署名清理完成：宣传行已删、kernel.string 已换、版权行保留"
 
@@ -2407,7 +2495,14 @@ jobs:
             mt*) SOC_VEND='*mediatek*|*mtk*' ;;
             *)   SOC_VEND='*qcom*|*snapdragon*' ;;
           esac
-          SOC_PAT="*$CPU_UC*|*$CPUD*|*$CPU_LC*|$SOC_VEND"
+          # CPU 为空 = 这台跨厂源没确认过 SoC（真我/小米的公开快照里不带 vendor DTS，猜不得）：
+          # 这时闸门只核 KMI 前缀 + 安卓大版本 + 机型白名单，不拿没根据的 SoC 去拦人。
+          if [ -n "$CPU" ]; then
+            SOC_PAT="*$CPU_UC*|*$CPUD*|*$CPU_LC*|$SOC_VEND"
+          else
+            SOC_PAT=''
+            echo "本包源未确认 SoC，闸门跳过 SoC 项"
+          fi
           AND_PAT="$ANDROID_SHORT_VERSION*"
           echo "闸门期望：机型[$DEV_PAT] SoC[$SOC_PAT] 安卓[$AND_PAT] 内核前缀[$KERNEL_VERSION.]"
           echo '# ---- flash-time guard, injected by the workflow ----' >> "$G"
@@ -2453,7 +2548,9 @@ jobs:
           echo 'if [ "$GP" != "1" ]; then BAD="getprop 不可用(可能是 recovery 缺 system)";' >> "$G"
           echo 'else' >> "$G"
           echo '  case "$DEV" in '"$DEV_PAT"') : ;; *) BAD="机型不在本包白名单（本包为 '"$FILE_CONF"'）" ;; esac' >> "$G"
-          echo '  case "$SOC" in '"$SOC_PAT"') : ;; *) [ -z "$BAD" ] && BAD="SoC 与构建目标('"$CPU"')不符" ;; esac' >> "$G"
+          if [ -n "$SOC_PAT" ]; then
+            echo '  case "$SOC" in '"$SOC_PAT"') : ;; *) [ -z "$BAD" ] && BAD="SoC 与构建目标('"$CPU"')不符" ;; esac' >> "$G"
+          fi
           echo '  case "$AND" in '"$AND_PAT"') : ;; *) [ -z "$BAD" ] && BAD="安卓版本与构建目标('"$ANDROID_SHORT_VERSION"')不符" ;; esac' >> "$G"
           echo 'fi' >> "$G"
           echo 'if [ -n "$BAD" ]; then' >> "$G"
