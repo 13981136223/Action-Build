@@ -1255,17 +1255,17 @@ jobs:
           # 而下一行的 -f 判断本来就是为"没补丁"准备的。改成 || true 让它走到 FENGCHI_SKIP。
           cp ./SCHED_PATCH/fengchi_${CLEAN_FILE}.patch ./ || true
           if [[ -f "fengchi_${CLEAN_FILE}.patch" ]]; then
-            # 先 dry-run：这台机型的树与补丁对不上时（实测 oneplus_13s_b 在
-            # include/linux/sched.h 有 1 个 hunk FAILED），原来是直接打死整条构建 ——
-            # 结果是这台机型连"不带风驰的内核"都拿不到。现在改成明确跳过并告警，
-            # 让包照样出来；风驰有没有真生效改由产物 Image 里的 hmbird 符号判定（交付侧已改成实测）。
+            # dos2unix 必须放在 dry-run **之前**：补丁文件是 CRLF，dry-run 拿原始文件比对
+            # 必然 hunk 失败，于是被误判成"不适配"直接降级 —— 实测 10 台（13/13s/13t/
+            # ace5_pro/ace5_ultra/pad_2_pro/pad_3/pad2_mt6991_b…）就是这么把风驰丢掉的。
+            # 真正的 apply 本来就是先 dos2unix 再 patch，所以顺序改成与 apply 一致。
+            dos2unix "fengchi_${CLEAN_FILE}.patch"
             if ! patch -p1 --dry-run -F 3 < "fengchi_${CLEAN_FILE}.patch" >/dev/null 2>&1; then
               echo "::warning::FENGCHI_SKIP: fengchi_${CLEAN_FILE}.patch 与该机型树不匹配（dry-run 有 hunk 失败），本轮不带风驰继续构建"
               echo "FENGCHI_VERDICT: 未生效（补丁不适配，已降级）"
               exit 0
             fi
             echo "正在打风驰补丁"
-            dos2unix "fengchi_${CLEAN_FILE}.patch"
             patch -p1 -F 3 < "fengchi_${CLEAN_FILE}.patch"
             echo "fengchi_patch完成"
             source $REJ_CHECKER
