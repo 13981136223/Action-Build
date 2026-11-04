@@ -1967,6 +1967,18 @@ jobs:
             MAKE_ARGS+=(BINDGEN="$BINDGEN_BIN")
           fi
 
+          # 6.12 的 runner.elf 依赖在这一层递归里被 $(srctree)（相对串 ../..）带偏，
+          # 命令行赋值优先于 Makefile 的 :=，直接把绝对目录钉进去，不再赌展开结果。
+          if [ -f "$GITHUB_WORKSPACE/kernel_workspace/.ksu_kernelsu_dir" ]; then
+            . "$GITHUB_WORKSPACE/kernel_workspace/.ksu_kernelsu_dir"
+            { [ -n "${KSU_KERNEL_DIR_ABS:-}" ] && [ -f "${KSU_KERNEL_DIR_ABS:-}/preinit/runner/runner.c" ]; } \
+              || { echo "::error::.ksu_kernelsu_dir 里的绝对目录读不到 runner.c：${KSU_KERNEL_DIR_ABS:-空}"; exit 1; }
+            MAKE_ARGS+=(KSU_KERNEL_DIR="$KSU_KERNEL_DIR_ABS")
+            echo "[开编前] 命令行钉死 KSU_KERNEL_DIR=$KSU_KERNEL_DIR_ABS"
+          else
+            echo "[开编前] 没有 .ksu_kernelsu_dir（非 6.12 或前置步未跑），按原样构建"
+          fi
+
           make O=out "${MAKE_ARGS[@]}" gki_defconfig --no-print-directory
 
           if [[ "$KERNEL_VERSION" == 5.* ]]; then
