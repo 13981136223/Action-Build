@@ -17,7 +17,7 @@ done
 echo "[源] KernelSU 克隆的 preinit = ${KSU:-没找到}"
 
 fixed=0
-for PRE in $(find -L "$KP" -type d -path '*/drivers/kernelsu/preinit' 2>/dev/null); do
+for PRE in $(find -L "$KP" -type d -name preinit 2>/dev/null); do
   if [ -f "$PRE/runner/runner.c" ]; then
     echo "[在场] $PRE/runner/runner.c"
     continue
@@ -50,7 +50,7 @@ done
 # 输出树 $O/drivers/kernelsu/preinit —— 从那儿数 ../../ 落回 $O/drivers/...，也就是它要的是
 # **out 树里**的 runner.c（run 41738160219：源树里已备好、保障步的硬断也过了，make 仍说 No rule）。
 # 所以同一份 runner.c 也要铺到对应的 out 路径（out 目录此刻可以不存在，mkdir -p 建出来即可）。
-for PRE in $(find -L "$KP" -type d -path '*/drivers/kernelsu/preinit' 2>/dev/null); do
+for PRE in $(find -L "$KP" -type d -name preinit 2>/dev/null); do
   [ -f "$PRE/runner/runner.c" ] || continue
   TOP=${PRE%/drivers/kernelsu/preinit}          # 该树的根（common/ 或 kernel-6.12/）
   OUT="$TOP/out/drivers/kernelsu/preinit/runner"
