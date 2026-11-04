@@ -289,9 +289,8 @@ jobs:
           CVLINE=$(grep -m1 "^${FILE}|" "$CVT" || true)
           if [ -n "$CVLINE" ]; then
             IFS='|' read -r C_NAME C_KIND C_SRC C_CPU C_ANDROID C_MAJOR C_LABEL <<EOF
-$CVLINE
-EOF
-            echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
+          $CVLINE
+          EOF            echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
             echo "CROSSVENDOR=1" >> $GITHUB_ENV
             echo "CV_KIND=$C_KIND" >> $GITHUB_ENV
             echo "CV_SRC=$C_SRC" >> $GITHUB_ENV
