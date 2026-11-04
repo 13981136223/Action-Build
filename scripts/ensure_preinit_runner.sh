@@ -86,4 +86,20 @@ if grep -rlF -- '../../drivers/kernelsu/preinit/' "$KP" 2>/dev/null | grep -q .;
   echo "::error::仍有残留的相对依赖：$(grep -rlF -- '../../drivers/kernelsu/preinit/' "$KP" 2>/dev/null | tr '\n' ' ')"
   exit 1
 fi
+# 决定性一步：上游 kernel/Makefile 里有两行
+#   KSU_KERNEL_DIR := $(srctree)/$(src)    （绝对，能用）
+#   KSU_KERNEL_DIR := $(src)                 （相对，6.12 走的就是这条）
+# 规则 $(obj)/preinit/runner.elf: $(KSU_KERNEL_DIR)/preinit/runner/runner.c 在**输出树**里求值，
+# 相对形式会展开成 $O/drivers/kernelsu/preinit/runner/runner.c —— make 打印的
+# "../../drivers/kernelsu/preinit/runner/runner.c" 正是它（run 41757643172 现场）。
+# 这也解释了为什么往前置源树或 out 树铺 runner.c 都没用：要的那个路径在 bazel/Kleaf 的输出树里。
+# 把相对那条改成绝对形式即可，且改完必须零残留。
+for M in $(find -L "$KP" -type f -path '*/drivers/kernelsu/Makefile' 2>/dev/null); do
+  grep -qxF 'KSU_KERNEL_DIR := $(src)' "$M" || continue
+  awk '{ if ($0 == "KSU_KERNEL_DIR := $(src)") print "KSU_KERNEL_DIR := $(srctree)/$(src)"; else print }' "$M" > "$M.tmp" && mv "$M.tmp" "$M"
+  grep -qxF 'KSU_KERNEL_DIR := $(src)' "$M" && { echo "::error::$M 相对定义仍在（改写没生效）"; exit 1; }
+  grep -qxF 'KSU_KERNEL_DIR := $(srctree)/$(src)' "$M" || { echo "::error::$M 改完找不到绝对定义"; exit 1; }
+  echo "[定义改绝对] $M"
+done
+
 echo "ENSURE_PREINIT: 补齐 $fixed 处，引用与文件全部对得上"
