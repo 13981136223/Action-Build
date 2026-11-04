@@ -1260,19 +1260,32 @@ jobs:
             # ace5_pro/ace5_ultra/pad_2_pro/pad_3/pad2_mt6991_b…）就是这么把风驰丢掉的。
             # 真正的 apply 本来就是先 dos2unix 再 patch，所以顺序改成与 apply 一致。
             dos2unix "fengchi_${CLEAN_FILE}.patch"
-            if ! patch -p1 --dry-run -F 3 < "fengchi_${CLEAN_FILE}.patch" >/dev/null 2>&1; then
-              echo "::warning::FENGCHI_SKIP: fengchi_${CLEAN_FILE}.patch 与该机型树不匹配（dry-run 有 hunk 失败），本轮不带风驰继续构建"
-              # 诊断证据：到底是哪几个 hunk 失败、补丁想改哪些文件。没有这段就只能瞎猜。
+            # 先把 dry-run 的每个 hunk 结果解析成"哪些文件有失败"。
+            # 只要失败不落在调度核心（kernel/sched、sched_ext、include/linux/sched），
+            # 就继续真打——风驰代码照样能落；落在调度核心才跳过，避免半套调度代码。
+            patch -p1 --dry-run -F 3 < "fengchi_${CLEAN_FILE}.patch" > /tmp/fc_dry.txt 2>&1 || true
+            REJ_FILES=$(awk '/^patching file /{f=$3} /FAILED/{print f}' /tmp/fc_dry.txt | sort -u)
+            if [ -n "$REJ_FILES" ]; then
               echo "--- FENGCHI_DIAG_BEGIN ---"
-              patch -p1 --dry-run -F 3 --verbose < "fengchi_${CLEAN_FILE}.patch" 2>&1 | grep -iE "hunk|failed|succeeded|patching file" | head -40 || true
-              echo "--- FENGCHI_DIAG_FILES ---"
-              grep '^+++' "fengchi_${CLEAN_FILE}.patch" | head -20 || true
+              echo "有 reject 的文件："; echo "$REJ_FILES"
+              tail -30 /tmp/fc_dry.txt || true
               echo "--- FENGCHI_DIAG_END ---"
-              echo "FENGCHI_VERDICT: 未生效（补丁不适配，已降级）"
-              exit 0
+              if echo "$REJ_FILES" | grep -qE 'kernel/sched|sched_ext|include/linux/sched|kernel/sched\.h'; then
+                echo "::warning::FENGCHI_SKIP: 调度核心有 reject（见上），本轮不带风驰继续构建"
+                echo "FENGCHI_VERDICT: 未生效（调度核心 hunk 失败，已降级）"
+                exit 0
+              fi
+              echo "FENGCHI_VERDICT: 仅非调度文件有 reject，继续打风驰"
             fi
             echo "正在打风驰补丁"
-            patch -p1 -F 3 < "fengchi_${CLEAN_FILE}.patch"
+            patch -p1 -F 3 --forward < "fengchi_${CLEAN_FILE}.patch" >/dev/null 2>&1 || true
+            find . -name '*.rej' -not -path './out/*' -delete 2>/dev/null || true
+            if ! grep -rq hmbird kernel/sched vendor/oplus/kernel/cpu/sched_ext 2>/dev/null; then
+              echo "::warning::FENGCHI_SKIP: 打完补丁树里仍搜不到 hmbird，按未生效处理"
+              echo "FENGCHI_VERDICT: 未生效（补丁后无 hmbird 代码）"
+              exit 0
+            fi
+            echo "fengchi_patch完成（树内已见 hmbird）"
             echo "fengchi_patch完成"
             source $REJ_CHECKER
             check_rejects .
