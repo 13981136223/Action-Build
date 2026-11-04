@@ -86,20 +86,44 @@ if grep -rlF -- '../../drivers/kernelsu/preinit/' "$KP" 2>/dev/null | grep -q .;
   echo "::error::仍有残留的相对依赖：$(grep -rlF -- '../../drivers/kernelsu/preinit/' "$KP" 2>/dev/null | tr '\n' ' ')"
   exit 1
 fi
-# 决定性一步：上游 kernel/Makefile 里有两行
-#   KSU_KERNEL_DIR := $(srctree)/$(src)    （绝对，能用）
-#   KSU_KERNEL_DIR := $(src)                 （相对，6.12 走的就是这条）
-# 规则 $(obj)/preinit/runner.elf: $(KSU_KERNEL_DIR)/preinit/runner/runner.c 在**输出树**里求值，
-# 相对形式会展开成 $O/drivers/kernelsu/preinit/runner/runner.c —— make 打印的
-# "../../drivers/kernelsu/preinit/runner/runner.c" 正是它（run 41757643172 现场）。
-# 这也解释了为什么往前置源树或 out 树铺 runner.c 都没用：要的那个路径在 bazel/Kleaf 的输出树里。
-# 把相对那条改成绝对形式即可，且改完必须零残留。
+# 上游 kernel/Makefile 的第 7-11 行是个二选一：
+#   ifeq ($(filter /%,$(src)),)  → KSU_KERNEL_DIR := $(srctree)/$(src)
+#   else                         → KSU_KERNEL_DIR := $(src)
+# 实测（run 41773078323，sha 0c2c9ae53）：走的是**第一条**，而这一层递归里 $(srctree) 展开成
+# 相对串 "../.."，所以 $(KSU_KERNEL_DIR) = "../../drivers/kernelsu" —— 上一版把第二条改成
+# $(srctree)/$(src) 等于什么都没改：两条最终都是同一个相对值。这就是"改完了还是同样报错"的原因。
+# make 打印的目标是 drivers/kernelsu/preinit/runner.elf（相对 objtree），说明它的 CWD 是 objtree 根，
+# 于是 "../../drivers/kernelsu/…" 落到 kernel_platform 这一层（或再往上一层）——那里没有 drivers/ 目录。
 for M in $(find -L "$KP" -type f -path '*/drivers/kernelsu/Makefile' 2>/dev/null); do
   grep -qxF 'KSU_KERNEL_DIR := $(src)' "$M" || continue
   awk '{ if ($0 == "KSU_KERNEL_DIR := $(src)") print "KSU_KERNEL_DIR := $(srctree)/$(src)"; else print }' "$M" > "$M.tmp" && mv "$M.tmp" "$M"
-  grep -qxF 'KSU_KERNEL_DIR := $(src)' "$M" && { echo "::error::$M 相对定义仍在（改写没生效）"; exit 1; }
-  grep -qxF 'KSU_KERNEL_DIR := $(srctree)/$(src)' "$M" || { echo "::error::$M 改完找不到绝对定义"; exit 1; }
-  echo "[定义改绝对] $M"
+  echo "[定义统一] $M（真正生效的是下面那条命令行覆盖，这里只是不再依赖分支）"
 done
+
+# 决定性修复一：把 KSU_KERNEL_DIR 用命令行钉成绝对路径。命令行赋值优先于 Makefile 里的 :=，
+# 上游那个 ifeq/else 无论走哪条都被覆盖，展开结果不再依赖 $(srctree) 是绝对还是相对。
+COMMON_REAL=$(readlink -f "$KP/common" 2>/dev/null)
+[ -n "$COMMON_REAL" ] && [ -d "$COMMON_REAL" ] || { echo "::error::读不到 common 的真实目录"; exit 1; }
+KSU_DIR="$COMMON_REAL/drivers/kernelsu"
+[ -f "$KSU_DIR/preinit/runner/runner.c" ] || { echo "::error::给命令行的绝对目录里缺 runner.c：$KSU_DIR"; exit 1; }
+echo "KSU_KERNEL_DIR_ABS=$KSU_DIR" > "$WS/.ksu_kernelsu_dir"
+echo "[命令行覆盖] 写入 $WS/.ksu_kernelsu_dir → $KSU_DIR"
+
+# 决定性修复二：Makefile 里另有 -I$(srctree)/drivers/kernelsu 这类硬编码（上游 15-16 行自己承认
+# 6.12 下 $(src) 变绝对才硬编码的）。同一个相对 $(srctree) 会让这些引用也指到 kernel_platform 这层。
+# 于是把 ../../drivers 这一层"补"出来：只在该位置本来没有 drivers 时才建符号链接，绝不覆盖已有目录。
+for BASE in "$KP" "$(dirname "$KP")"; do
+  if [ -e "$BASE/drivers" ]; then
+    echo "[补路径跳过] $BASE/drivers 已存在（$(test -L "$BASE/drivers" && echo 符号链接 || echo 真目录)）"
+    continue
+  fi
+  ln -s "$COMMON_REAL" "$BASE/drivers" || { echo "::error::无法在 $BASE 建 drivers 链接"; exit 1; }
+  echo "[补路径] $BASE/drivers -> $COMMON_REAL"
+done
+for BASE in "$KP" "$(dirname "$KP")"; do
+  [ -f "$BASE/drivers/kernelsu/preinit/runner/runner.c" ] && echo "[可达] $BASE/drivers/kernelsu/preinit/runner/runner.c"
+done
+grep -qxF 'KSU_KERNEL_DIR := $(src)' <(find -L "$KP" -type f -path '*/drivers/kernelsu/Makefile' -exec cat {} + 2>/dev/null) \
+  && { echo "::error::仍有相对定义残留"; exit 1; }
 
 echo "ENSURE_PREINIT: 补齐 $fixed 处，引用与文件全部对得上"
