@@ -33,19 +33,75 @@ mkdir -p "$PLAT"
 STAGE="$WS/.cv_stage"
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 
-# 找内核根：必须有 Makefile(VERSION =) 和 arch/arm64/configs/gki_defconfig
+# 找内核根：必须有 Makefile(VERSION =) 和 arch/arm64
+# 不能写成 `... | head -1`：find 出来多个候选时 head 先退场，dirname 收到 SIGPIPE
+# 就以非 0 退出，set -e 直接把整步杀掉（realme_gt7pro 那轮日志里一排 "dirname: Broken pipe"）。
 find_kernel_root() {
-  local BASE=$1 HIT
-  HIT=$(find "$BASE" -maxdepth 4 -type f -name Makefile 2>/dev/null | while read -r M; do
-          grep -q '^VERSION *=' "$M" && dirname "$M"
-        done | head -1)
-  [ -n "$HIT" ] || { echo "::error::解压结果里找不到内核根（没有带 VERSION= 的 Makefile）"; exit 1; }
-  # Makefile 旁边得有 arm64 配置才算内核根（排除 Documentation/ 里的同名文件）
-  if [ ! -d "$HIT/arch/arm64" ]; then
-    echo "::error::认出的内核根 $HIT 里没有 arch/arm64，布局不认识"
-    exit 1
-  fi
-  echo "$HIT"
+  local BASE=$1 M
+  for M in $(find "$BASE" -maxdepth 4 -type f -name Makefile 2>/dev/null); do
+    if grep -q '^VERSION *=' "$M" 2>/dev/null; then
+      local D=$(dirname "$M")
+      if [ -d "$D/arch/arm64" ]; then echo "$D"; return 0; fi
+    fi
+  done
+  echo "::error::解压结果里找不到带 arch/arm64 的内核根（Makefile 有 VERSION= 的那种）" >&2
+  return 1
+}
+
+# 公开的 common 快照只开园内核，vendor 侧目录（kernel/oplus_cpu/sched 等）常常整块缺席。
+# Kconfig 里那行 source "kernel/oplus_cpu/sched/Kconfig" 就会让 gki_defconfig 直接
+# "can't open file" Error 1（realme gtneo6/gt6 实测）；Makefile 里 obj-y += 缺失目录同理会炸。
+# 这里只注释「指向不存在路径」的那几行，指向存在文件的一律不动。
+strip_dangling_refs() {
+  python3 - "$COMMON" <<'PY'
+import os, re, sys
+root = sys.argv[1]
+if 'out' in os.listdir(root):
+    pass
+src = re.compile(r'^(\s*)source\s+"([^"]+)"')
+obj = re.compile(r'^(\s*)obj-(?:y|m)\s*\+=\s*(\S+/)\s*(?:#.*)?$')
+kc_miss, mk_miss = [], []
+for dirpath, dirs, files in os.walk(root):
+    if 'out' in dirs:
+        dirs.remove('out')
+    for f in files:
+        p = os.path.join(dirpath, f)
+        rel = os.path.relpath(dirpath, root)
+        if f == 'Kconfig' or f.startswith('Kconfig.'):
+            lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
+            ch = False
+            for i, l in enumerate(lines):
+                m = src.match(l)
+                if not m:
+                    continue
+                t = m.group(2)
+                if os.path.exists(os.path.join(root, t)) or os.path.exists(os.path.join(dirpath, t)):
+                    continue
+                lines[i] = m.group(1) + '# CVSHIM ' + l.strip()
+                kc_miss.append('%s -> %s' % (os.path.relpath(p, root), t))
+                ch = True
+            if ch:
+                open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+        elif f == 'Makefile' and rel != '.':
+            lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
+            ch = False
+            for i, l in enumerate(lines):
+                m = obj.match(l)
+                if not m:
+                    continue
+                if os.path.isdir(os.path.join(dirpath, m.group(2))):
+                    continue
+                lines[i] = m.group(1) + '# CVSHIM ' + l.strip()
+                mk_miss.append('%s -> %s' % (os.path.relpath(p, root), m.group(2)))
+                ch = True
+            if ch:
+                open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+print('CVSHIM 注释掉缺目录引用：Kconfig %d 处，Makefile %d 处' % (len(kc_miss), len(mk_miss)))
+for x in (kc_miss + mk_miss)[:25]:
+    print('   ' + x)
+if len(kc_miss) + len(mk_miss) > 25:
+    print('   ...（其余略）')
+PY
 }
 
 case "$KIND" in
@@ -67,9 +123,11 @@ case "$KIND" in
     echo "::error::不支持的 KIND=[$KIND]（只认 git / tar）"; exit 1 ;;
 esac
 
-ROOT=$(find_kernel_root "$STAGE/tree")
+ROOT=$(find_kernel_root "$STAGE/tree") || exit 1
 echo "内核根：$ROOT"
 mv "$ROOT" "$COMMON"
+# 单仓快照里 vendor 侧目录缺失，先把打不开的 source/obj-y 注释掉（必须在打 susfs/KernelSU 补丁之前）
+strip_dangling_refs
 # 内核根在 tree/<某包装目录> 时，把剩下没搬走的清掉，别让 kernel_workspace 里留垃圾
 rm -rf "$STAGE"
 
