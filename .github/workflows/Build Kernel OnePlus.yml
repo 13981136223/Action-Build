@@ -107,6 +107,12 @@ on:
           - oneplus_ace_6t_Canary
           - oneplus_pad_3_pro_Canary
           - oneplus_pad_4_Canary
+          # 跨厂（OPPO/真我/联想）通用包：FILE 命中 scripts/crossvendor-sources.txt 时
+          # 不走一加 manifest，改成摊平公开 common 快照（见 Extract Manifest Info 的跨厂分支）
+          - cv_oppo_sm8750_b16
+          - cv_oppo_sm8650_b16
+          - cv_realme_gt8_b16
+          - cv_lenovo_y700_66118
       SUSFS_CI:
         type: choice
         description: "SUSFS模块下载调用方向//SUSFS module branch"
@@ -269,6 +275,44 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
+
+          # ---- 跨厂模式（OPPO / 真我 / 小米 / 联想 / 红魔）----
+          # 这五家的公开源不是 OnePlusOSS 那套 kernel_manifest XML，而是一个个「GKI common
+          # 快照」仓库/压缩包。命中 scripts/crossvendor-sources.txt 就走这条路：
+          # 不解析 manifest，直接把 FILE|KIND|SRC|CPU|ANDROID|安卓大版本|显示名 摊到 env 里，
+          # 真正的取源码在后面的 Initialize Repo and Sync 里做。
+          CVT="/tmp/crossvendor_sources.txt"
+          if ! curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/crossvendor-sources.txt" -o "$CVT"; then
+            echo "没有跨厂源码表（$GITHUB_REPOSITORY/scripts/crossvendor-sources.txt 取不到），按一加 manifest 走"
+            : > "$CVT"
+          fi
+          CVLINE=$(grep -m1 "^${FILE}|" "$CVT" || true)
+          if [ -n "$CVLINE" ]; then
+            IFS='|' read -r C_NAME C_KIND C_SRC C_CPU C_ANDROID C_MAJOR C_LABEL <<EOF
+$CVLINE
+EOF
+            echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
+            echo "CROSSVENDOR=1" >> $GITHUB_ENV
+            echo "CV_KIND=$C_KIND" >> $GITHUB_ENV
+            echo "CV_SRC=$C_SRC" >> $GITHUB_ENV
+            echo "CV_LABEL=$C_LABEL" >> $GITHUB_ENV
+            echo "FILE_CONF=$C_NAME" >> $GITHUB_ENV
+            echo "FILE_BASE=$C_LABEL" >> $GITHUB_ENV
+            echo "CPU=$C_CPU" >> $GITHUB_ENV
+            echo "ANDROID_VERSION=$C_ANDROID" >> $GITHUB_ENV
+            echo "ANDROID_SHORT_VERSION=$C_MAJOR" >> $GITHUB_ENV
+            # 下面这些是一加路径才会有的变量，跨厂没有，统一给空串，别让 set -u 之后炸在别处
+            echo "MANIFEST_REPO=" >> $GITHUB_ENV
+            echo "MANIFEST_REPO_NAME=" >> $GITHUB_ENV
+            echo "MANIFEST_BRANCH=" >> $GITHUB_ENV
+            echo "SINGLE_TREE_DIR=" >> $GITHUB_ENV
+            echo "CPUD=" >> $GITHUB_ENV
+            echo "BUILD_METHOD=" >> $GITHUB_ENV
+            echo "value=${C_LABEL}_Android${C_ANDROID}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "CROSSVENDOR=0" >> $GITHUB_ENV
+
           if [[ "$FILE" =~ ^(.+)_([a-zA-Z])$ ]]; then
             FILE_CONF="${BASH_REMATCH[1]}"
           else
@@ -542,14 +586,26 @@ jobs:
           FILE: ${{ github.event.inputs.FILE }}
         run: |
           cd kernel_workspace
-          mkdir -p .repo/manifests
-          cp "$GITHUB_WORKSPACE/.repo/manifests_fallback/${FILE}.xml" ".repo/manifests/${FILE}.xml"
-          BASE_URL="https://github.com/${MANIFEST_REPO}/${MANIFEST_REPO_NAME}.git"
+          if [ "${CROSSVENDOR:-0}" = "1" ]; then
+            # 跨厂：取回公开 common 快照并摊平成 kernel_platform/common + 自带 clang。
+            # 取回来的脚本必须带这行标记，否则说明 raw 拿到的不是我们要的那份（改名/缓存/截断）。
+            CVSH="/tmp/fetch_crossvendor_source.sh"
+            if ! curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/fetch_crossvendor_source.sh" -o "$CVSH"; then
+              echo "::error::取不到 scripts/fetch_crossvendor_source.sh"
+              exit 1
+            fi
+            grep -q 'CROSSVENDOR_FETCH_SHIM_v1' "$CVSH" || { echo "::error::取回的 fetch_crossvendor_source.sh 内容不对（缺标记行）"; exit 1; }
+            bash "$CVSH" "$FILE" "$GITHUB_WORKSPACE/kernel_workspace" /tmp/crossvendor_sources.txt || exit 1
+          else
+            mkdir -p .repo/manifests
+            cp "$GITHUB_WORKSPACE/.repo/manifests_fallback/${FILE}.xml" ".repo/manifests/${FILE}.xml"
+            BASE_URL="https://github.com/${MANIFEST_REPO}/${MANIFEST_REPO_NAME}.git"
 
-          echo "使用$MANIFEST_REPO/$MANIFEST_REPO_NAME($MANIFEST_BRANCH)初始化仓库..."
-          repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
-          sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
-          repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
+            echo "使用$MANIFEST_REPO/$MANIFEST_REPO_NAME($MANIFEST_BRANCH)初始化仓库..."
+            repo init -u "$BASE_URL" -b "$MANIFEST_BRANCH" -m "${FILE}.xml" --depth=1 --no-clone-bundle --no-tags
+            sed -i -e '/prebuilts\/asuite"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' -e '/tools\/tradefederation\/prebuilts"/{/ks-kernel\.lnx\.5\.0\.r3-rel/d}' ".repo/manifests/${FILE}.xml"
+            repo sync -c -j$(nproc) --no-clone-bundle --no-tags --force-sync
+          fi
 
           # 单仓布局（MTK）在这里接上：kernel_platform/common -> ../kernel-<ver>。
           # 只有接上并且接对了才继续 —— 后面有 6 处无条件步骤直接 cd kernel_platform/common
