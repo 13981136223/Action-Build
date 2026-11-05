@@ -317,6 +317,10 @@ jobs:
   build:
     name: ${{ github.event.inputs.FAST_BUILD == 'true' && ' [FAST]' || '' }}${{ contains(github.event.inputs.FILE, '_aosp') && ' [AOSP]' || '' }}${{ github.event.inputs.KPM == 'KPM' && ' [KPM]' || github.event.inputs.KPM == 'KPN' && ' [KPN]' || '' }}${{ github.event.inputs.LSM_BBG == 'true' && ' [BBG]' || '' }}${{ github.event.inputs.SCHED_HMBIRD == 'true' && ' [HMBIRD]' || '' }}${{ github.event.inputs.DROID_SPACES == 'true' && ' [DS]' || '' }}${{ startsWith(github.event.inputs.ZRAM, '1/') && ' [ZRAM]' || '' }}${{ github.event.inputs.RE_KERNEL == 'true' && ' [REKER]' || '' }}${{ github.event.inputs.LZ4_UPDATE == 'true' && ' [LZ4UPD]' || '' }}For ${{ github.event.inputs.FILE }} ${{ github.event.inputs.SUFFIX }}
     runs-on: ubuntu-latest
+    # 默认 360 分钟：卡死的构建会把 20 个槽位一直占着（实测有 20 个 run 在 make 里挂了
+    # 134 分钟以上仍没结束，而历史上跨厂最长成功是 33 分钟）。150 分钟够正常构建（一加那边
+    # 最长的 6.12 约 48 分钟），又能把真卡死的回收掉让排队里的往前走。
+    timeout-minutes: 150
     env:
       CCACHE_COMPILERCHECK: "none"
       CCACHE_NOHASHDIR: "true"
@@ -2204,7 +2208,33 @@ jobs:
           fi
 
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
-          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
+          if [ -f "$GITHUB_WORKSPACE/kernel_workspace/.crossvendor_mode" ]; then
+            # 跨厂的公开树是带完整 vendor 代码的厂商树，`make`（默认 all）要编几千个 .ko：
+            # 实测 20 个 run 全在 134 分钟以上没结束，而历史上没有任何跨厂构建超过 74 分钟成功过。
+            # AK3 包真正需要的只有 Image（DTB 走原厂 dtbo/vendor_boot），外加随包自动安装的
+            # zram.ko。所以跨厂只编 Image，再单独把 zram 这一个模块编出来。
+            echo "[跨厂] 只编 Image + zram 模块，不编全树 modules"
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" modules_prepare Image --no-print-directory
+            IMGBIN=out/arch/arm64/boot/Image
+            [ -f "$IMGBIN" ] || { echo "::error::跨厂精简构建没产出 $IMGBIN"; exit 1; }
+            echo "✅ Image: $(stat -c %s "$IMGBIN") 字节"
+            ZDIR=""
+            for d in drivers/block/zram drivers/block; do
+              [ -f "$d/Kconfig" ] || [ -d "$d" ] || continue
+              if grep -rqE '^(config|obj)-.*ZRAM' "$d/Makefile" "$d/Kconfig" 2>/dev/null; then ZDIR=$d; break; fi
+            done
+            if [ -z "$ZDIR" ]; then
+              echo "::warning::没定位到 zram 源码目录，跳过模块单独构建（后面 ZRAM 步骤会明确报错，不会静默出无 zram 的包）"
+            else
+              echo "单独构建 zram 模块：M=$ZDIR"
+              make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" M="$ZDIR" modules --no-print-directory \
+                || { echo "::error::M=$ZDIR modules 构建失败"; exit 1; }
+              find out -name 'zram.ko' -printf '  zram.ko → %p (%s 字节)\n' | head -3
+              find out -name 'zram.ko' | grep -q . || { echo "::error::构建完没有 zram.ko，随包模块没法做"; exit 1; }
+            fi
+          else
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
+          fi
           ccache -s
 
       - name: Fallback to Build Kernel
