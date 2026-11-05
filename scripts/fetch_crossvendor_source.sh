@@ -53,54 +53,46 @@ find_kernel_root() {
 # "can't open file" Error 1（realme gtneo6/gt6 实测）；Makefile 里 obj-y += 缺失目录同理会炸。
 # 这里只注释「指向不存在路径」的那几行，指向存在文件的一律不动。
 strip_dangling_refs() {
+  # 只治「Kconfig source 指向不存在的文件」这一种实测会炸的情况
+  # （init/Kconfig: can't open file "kernel/oplus_cpu/sched/Kconfig" → gki_defconfig Error 1）。
+  # 之前顺手改写 Makefile 里 obj-y 的缺失目录，实测同一棵树（cv_oppo_sm8735_66 / mt6993_612 /
+  # mt6789_612）改前 19-33 分钟出包、改后 148 分钟还没编完 —— 那部分改写不是需要的修复，是新增风险，撤掉。
+  # 另外：全树没有打不开的 source 时一个字节都不改（不做无谓的读写，也不动 mtime）。
   python3 - "$COMMON" <<'PY'
 import os, re, sys
 root = sys.argv[1]
-if 'out' in os.listdir(root):
-    pass
 src = re.compile(r'^(\s*)source\s+"([^"]+)"')
-obj = re.compile(r'^(\s*)obj-(?:y|m)\s*\+=\s*(\S+/)\s*(?:#.*)?$')
-kc_miss, mk_miss = [], []
+todo = []
 for dirpath, dirs, files in os.walk(root):
     if 'out' in dirs:
         dirs.remove('out')
     for f in files:
+        if not (f == 'Kconfig' or f.startswith('Kconfig.')):
+            continue
         p = os.path.join(dirpath, f)
-        rel = os.path.relpath(dirpath, root)
-        if f == 'Kconfig' or f.startswith('Kconfig.'):
-            lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
-            ch = False
-            for i, l in enumerate(lines):
-                m = src.match(l)
-                if not m:
-                    continue
-                t = m.group(2)
-                if os.path.exists(os.path.join(root, t)) or os.path.exists(os.path.join(dirpath, t)):
-                    continue
-                lines[i] = m.group(1) + '# CVSHIM ' + l.strip()
-                kc_miss.append('%s -> %s' % (os.path.relpath(p, root), t))
-                ch = True
-            if ch:
-                open(p, 'w', encoding='utf-8').write('\n'.join(lines))
-        elif f == 'Makefile' and rel != '.':
-            lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
-            ch = False
-            for i, l in enumerate(lines):
-                m = obj.match(l)
-                if not m:
-                    continue
-                if os.path.isdir(os.path.join(dirpath, m.group(2))):
-                    continue
-                lines[i] = m.group(1) + '# CVSHIM ' + l.strip()
-                mk_miss.append('%s -> %s' % (os.path.relpath(p, root), m.group(2)))
-                ch = True
-            if ch:
-                open(p, 'w', encoding='utf-8').write('\n'.join(lines))
-print('CVSHIM 注释掉缺目录引用：Kconfig %d 处，Makefile %d 处' % (len(kc_miss), len(mk_miss)))
-for x in (kc_miss + mk_miss)[:25]:
-    print('   ' + x)
-if len(kc_miss) + len(mk_miss) > 25:
-    print('   ...（其余略）')
+        lines = open(p, encoding='utf-8', errors='replace').read().split('\n')
+        hits = []
+        for i, l in enumerate(lines):
+            m = src.match(l)
+            if not m:
+                continue
+            t = m.group(2)
+            if os.path.exists(os.path.join(root, t)) or os.path.exists(os.path.join(dirpath, t)):
+                continue
+            hits.append((i, m.group(1) + '# CVSHIM ' + l.strip(), t))
+        if hits:
+            todo.append((p, lines, hits))
+if not todo:
+    print('CVSHIM: 没有打不开的 Kconfig source，源码一个字节都没改')
+else:
+    n = 0
+    for p, lines, hits in todo:
+        for i, new, _ in hits:
+            lines[i] = new
+        open(p, 'w', encoding='utf-8').write('\n'.join(lines))
+        n += len(hits)
+        print('CVSHIM 注释 %s：%s' % (os.path.relpath(p, root), ', '.join(t for _, _, t in hits)))
+    print('CVSHIM: 共注释 %d 处' % n)
 PY
 }
 
