@@ -1,0 +1,56 @@
+name: CV Diag（只算构建量，不出包）
+on:
+  workflow_dispatch:
+    inputs:
+      FILE:
+        description: "跨厂源码表里的 FILE，例如 cv_oppo_sm8750_66"
+        required: true
+        default: cv_oppo_sm8750_66
+permissions:
+  contents: read
+jobs:
+  diag:
+    name: diag For ${{ github.event.inputs.FILE }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Maximize Build Space
+        run: bash scripts/maximize-build-space.sh
+
+      - name: 装依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bison flex libelf-dev dwarves zlib1g-dev libssl-dev bc rsync curl unzip xz-utils
+
+      - name: 取源码（与正式构建同一个脚本）
+        run: |
+          set -e
+          mkdir -p kernel_workspace
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/crossvendor-sources.txt" -o /tmp/cvsrc.txt
+          curl -fsSL "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/scripts/fetch_crossvendor_source.sh" -o /tmp/fetch.sh
+          grep -q 'CROSSVENDOR_FETCH_SHIM_v1' /tmp/fetch.sh || { echo "::error::取回的 fetch 脚本不对"; exit 1; }
+          bash /tmp/fetch.sh "${{ github.event.inputs.FILE }}" "$GITHUB_WORKSPACE/kernel_workspace" /tmp/cvsrc.txt
+
+      - name: 只跑 gki_defconfig 并统计构建量
+        run: |
+          set -e
+          cd kernel_workspace/kernel_platform/common
+          CLANG_DIR="$GITHUB_WORKSPACE/kernel_workspace/kernel_platform/prebuilts-clangstub/clang/host/linux-x86"
+          CB=$(find "$CLANG_DIR" -maxdepth 2 -type d -name 'clang-r*' | head -1)
+          [ -x "$CB/bin/clang" ] || { echo "::error::没有 clang：$CB"; exit 1; }
+          export PATH="$CB/bin:$PATH"
+          make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld HOSTCC=clang gki_defconfig --no-print-directory
+          echo "DIAG: 内核版本 $(awk -F'= *' '/^VERSION/{v=$2}/^PATCHLEVEL/{p=$2}/^SUBLEVEL/{s=$2}END{print v"."p"."s}' Makefile)"
+          echo "DIAG: .config 里 =y 的项 $(grep -c '=y$' out/.config)"
+          echo "DIAG: .config 里 =m 的项 $(grep -c '=m$' out/.config)"
+          echo "DIAG: 全树 Kconfig 里 config 定义 $(grep -rhoc '^config [A-Z0-9_]*' --include='Kconfig*' . 2>/dev/null | paste -sd+ - | bc)"
+          # make -n 只打印要执行的命令，不真的编译：这就是"要编多少个东西"的直接读数
+          N=$(make O=out LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC=clang LD=ld.lld HOSTCC=clang -n Image 2>/dev/null | grep -c 'clang' || true)
+          echo "DIAG: make -n Image 需要跑 clang 的次数 $N"
+          M=$(make O=out LLVM=1 ARCH=arm64 -n modules 2>/dev/null | grep -c 'clang' || true)
+          echo "DIAG: make -n modules 需要跑 clang 的次数 $M"
+          echo "DIAG: CVSHIM 改动过的文件："
+          grep -rl 'CVSHIM' --include='Kconfig*' --include='Kconfig' . 2>/dev/null | head -10
