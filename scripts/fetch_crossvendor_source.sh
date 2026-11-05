@@ -124,6 +124,14 @@ esac
 ROOT=$(find_kernel_root "$STAGE/tree") || exit 1
 echo "内核根：$ROOT"
 mv "$ROOT" "$COMMON"
+# 厂商仓库（真我/小米那批 -common-source / <代号>-oss 分支）导出时丢了可执行位，
+# 结果 gki_defconfig 起不来：run 41990247015 实测报
+#   sh: 1: ../scripts/cc-version.sh: Permission denied
+#   scripts/Kconfig.include:45: Sorry, this C compiler is not supported.
+# kconfig 的 shell 调用要求脚本本身可执行，所以这里把脚本类的执行位补回来。
+chmod -R +x "$COMMON/scripts" "$COMMON/tools" 2>/dev/null || true
+find "$COMMON" -type f \( -name '*.sh' -o -name '*.py' -o -name '*.pl' \) -exec chmod +x {} + 2>/dev/null || true
+echo "已补脚本执行位（scripts/ tools/ 与全树 *.sh/*.py/*.pl）"
 # 单仓快照里 vendor 侧目录缺失，先把打不开的 source/obj-y 注释掉（必须在打 susfs/KernelSU 补丁之前）
 strip_dangling_refs
 # 内核根在 tree/<某包装目录> 时，把剩下没搬走的清掉，别让 kernel_workspace 里留垃圾
