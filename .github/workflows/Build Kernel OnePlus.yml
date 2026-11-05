@@ -381,6 +381,13 @@ jobs:
             # C_CPU 允许为空：真我/小米的公开 common 快照里认不出 SoC，宁可少一项闸门也不猜
             if [ -z "$C_CPU" ]; then echo "跨厂表：$C_NAME 没确认 SoC，闸门只核 KMI/安卓/机型"; C_CPU=''; fi
             echo "CROSSVENDOR_HIT: $C_NAME kind=$C_KIND src=$C_SRC cpu=$C_CPU android=$C_ANDROID label=$C_LABEL"
+            # 第 8 列（可缺省）= 用哪个补丁键去找风驰：跨厂树自己的 FILE 名在 SCHED_PATCH 里
+            # 当然没有文件，所以借同 SoC 的一加机型补丁键试，能不能落由 dry-run 闸门实测判定。
+            C_FC=$(printf '%s' "$CVLINE" | cut -d'|' -f8)
+            if [ -n "$C_FC" ]; then
+              echo "HMBIRD_FILE=$C_FC" >> $GITHUB_ENV
+              echo "风驰补丁键：$C_FC（能不能进 Image 由 dry-run 与 hmbird_sched 实测决定）"
+            fi
             echo "CROSSVENDOR=1" >> $GITHUB_ENV
             echo "CV_KIND=$C_KIND" >> $GITHUB_ENV
             echo "CV_SRC=$C_SRC" >> $GITHUB_ENV
@@ -1383,6 +1390,12 @@ jobs:
         run: |
           cd kernel_workspace/kernel_platform/common
           CLEAN_FILE="${FILE//_bak/}"
+          # 跨厂包没有自己的风驰补丁键，用 crossvendor-sources.txt 第 8 列借一个同 SoC 的一加键；
+          # 一加自己的 run 里 HMBIRD_FILE 是空的，这一行对它们完全惰性。
+          if [ -n "${HMBIRD_FILE:-}" ]; then
+            echo "补丁键改用 $HMBIRD_FILE（本包 FILE=$FILE）"
+            CLEAN_FILE="$HMBIRD_FILE"
+          fi
           for p in ./kernel/sched/hmbird* ./vendor/oplus/kernel/cpu/sched_ext/hmbird*; do
             [ -d "$p" ] && {
               echo "源码中风驰代码已经存在，启用二次回退"
