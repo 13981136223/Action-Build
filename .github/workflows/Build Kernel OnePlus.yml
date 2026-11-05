@@ -2226,8 +2226,12 @@ jobs:
               echo "[跨厂] 第一遍没出 Image（退出码 $rc），从 modpost 报错里摘孤儿模块后重编"
               grep -oE '\[[^]]+\.ko\] undefined' /tmp/mk1.log | sed 's/^\[//; s/\.ko\] undefined$//' | xargs -r -n1 dirname | sort -u > /tmp/orphan.txt || true
               if [ ! -s /tmp/orphan.txt ]; then
-                echo "::error::第一轮失败，但不是孤儿模块问题，日志尾部："
-                tail -25 /tmp/mk1.log
+                echo "::error::第一轮失败，但不是「孤儿模块缺符号」这一类。真正的报错行："
+                # tail -25 会停在最后那批 CC/LD 上，真正的 error 在更早的位置，
+                # 所以直接抓错误行（make -k 会跳过失败目录继续编，报错埋在几万行里）。
+                grep -E "error:|fatal error|No rule to make target|undefined!|Error [0-9]" /tmp/mk1.log | head -30 || true
+                echo "---- 日志尾部 ----"
+                tail -12 /tmp/mk1.log || true
                 exit 1
               fi
               while read -r D; do
@@ -2239,7 +2243,11 @@ jobs:
               done < /tmp/orphan.txt
               rc=0
               make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory > /tmp/mk2.log 2>&1 || rc=$?
-              [ -f out/arch/arm64/boot/Image ] || { echo "::error::摘完孤儿模块还是没有 Image（退出码 $rc），第二轮日志尾部："; tail -25 /tmp/mk2.log; exit 1; }
+              [ -f out/arch/arm64/boot/Image ] || {
+                echo "::error::摘完孤儿模块还是没有 Image（退出码 $rc），第二轮的报错行："
+                grep -E "error:|fatal error|No rule to make target|undefined!|Error [0-9]" /tmp/mk2.log | head -30 || true
+                tail -12 /tmp/mk2.log || true
+                exit 1; }
             else
               tail -6 /tmp/mk1.log
             fi
