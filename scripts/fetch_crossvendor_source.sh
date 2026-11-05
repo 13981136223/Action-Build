@@ -77,6 +77,12 @@ for dirpath, dirs, files in os.walk(root):
             if not m:
                 continue
             t = m.group(2)
+            # 关键：带 make 变量的 source（arch/$(SRCARCH)/Kconfig、$(KCONFIG_EXT_PREFIX)Kconfig.ext…）
+            # 根本不是"文件不存在"，而是 kbuild 在展开时才解析。CV 诊断跑（run 41979260668）实测
+            # 把 arch/$(SRCARCH)/Kconfig 等 4 条正常 source 注释掉了 —— 等于删掉整个 arch 的 Kconfig，
+            # 结果 gki_defconfig 直接崩、编出来的 .config 面目全非、构建 130 分钟都编不完。
+            if '$' in t:
+                continue
             if os.path.exists(os.path.join(root, t)) or os.path.exists(os.path.join(dirpath, t)):
                 continue
             hits.append((i, m.group(1) + '# CVSHIM ' + l.strip(), t))
