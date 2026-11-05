@@ -2219,9 +2219,14 @@ jobs:
             # modpost 是 Image 的前置步骤，所以 -k 也救不出 Image。这类模块我们根本不装进包
             # （原厂 .ko 在 /vendor/lib/modules，不靠我们的内核），所以自愈：把它换成空壳 Makefile
             # 再增量编一次。第二轮还编不出 Image 才算真失败。
-            echo "[跨厂] 第一遍 make -k（坏 vendor 模块不拦出包）"
+            echo "[跨厂] 第一遍 make -k（目标写死 Image + modules，不跟 all 去编 dtbs）"
             rc=0
-            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory > /tmp/mk1.log 2>&1 || rc=$?
+            # 不能直接用默认的 all：它会连 dtbs 一起编，而厂商树里常夹着别家的 DTS，
+            # 例如 cv_xiaomi_goya_66（run 42022480309）
+            #   arch/arm64/boot/dts/allwinner/sun50i-a64.dtsi: fatal error: 'dt-bindings/clock/sun50i-a64-ccu.h' file not found
+            # 我们的包只换 Image（DTB 走原厂 dtbo/vendor_boot），modules 是为了拿到
+            # Module.symvers 与随包 zram.ko，所以显式列目标。
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k Image modules --no-print-directory > /tmp/mk1.log 2>&1 || rc=$?
             if [ ! -f out/arch/arm64/boot/Image ]; then
               echo "[跨厂] 第一遍没出 Image（退出码 $rc），从 modpost 报错里摘孤儿模块后重编"
               grep -oE '\[[^]]+\.ko\] undefined' /tmp/mk1.log | sed 's/^\[//; s/\.ko\] undefined$//' | xargs -r -n1 dirname | sort -u > /tmp/orphan.txt || true
@@ -2242,7 +2247,7 @@ jobs:
                 echo "  摘掉孤儿模块：$D"
               done < /tmp/orphan.txt
               rc=0
-              make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory > /tmp/mk2.log 2>&1 || rc=$?
+              make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k Image modules --no-print-directory > /tmp/mk2.log 2>&1 || rc=$?
               [ -f out/arch/arm64/boot/Image ] || {
                 echo "::error::摘完孤儿模块还是没有 Image（退出码 $rc），第二轮的报错行："
                 grep -E "error:|fatal error|No rule to make target|undefined!|Error [0-9]" /tmp/mk2.log | head -30 || true
