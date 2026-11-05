@@ -2219,6 +2219,16 @@ jobs:
             # modpost 是 Image 的前置步骤，所以 -k 也救不出 Image。这类模块我们根本不装进包
             # （原厂 .ko 在 /vendor/lib/modules，不靠我们的内核），所以自愈：把它换成空壳 Makefile
             # 再增量编一次。第二轮还编不出 Image 才算真失败。
+            # 另两项实测会炸在这类厂商树上，先关掉（都不是包里用到的功能）：
+            #   CONFIG_IKHEADERS → kernel/kheaders_data.tar.xz Error 2（run 42026782804，OPPO sm8850_612）
+            #   厂商改过的 net/netfilter/xt_HL.c 引用没随附的头（run 42026788304，小米 goya）
+            for CV_OFF in IKHEADERS NETFILTER_XT_TARGET_HL; do
+              if grep -q "^CONFIG_${CV_OFF}=" out/.config 2>/dev/null; then
+                scripts/config --file out/.config -d "$CV_OFF"
+                echo "[跨厂] 关掉 CONFIG_$CV_OFF（实测在这类树上编不过，且与包内功能无关）"
+              fi
+            done
+            make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
             echo "[跨厂] 第一遍 make -k（目标写死 Image + modules，不跟 all 去编 dtbs）"
             rc=0
             # 不能直接用默认的 all：它会连 dtbs 一起编，而厂商树里常夹着别家的 DTS，
