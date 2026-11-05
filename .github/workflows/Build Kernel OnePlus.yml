@@ -2208,12 +2208,24 @@ jobs:
           fi
 
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
-          # 跨厂只编 Image 的快路撤掉了（run 41980994360 等 4 台实测）：外部模块
-          # `make M=drivers/block/zram modules` 看不到 vmlinux 的 Module.symvers，
-          # modpost 直接报 crypto_comp_compress / vzalloc / __per_cpu_offset 等未定义 ——
-          # 那 .ko 就算产出来也是坏的。跨厂慢的真凶是 CVSHIM 误删 arch Kconfig（已修），
-          # 不是 make all 本身，所以两条路都回到完整构建。
-          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
+          # 跨厂的公开树里带着「依赖在另一棵没开源的树里」的 vendor 模块，例如
+          # cv_xiaomi_dada_66（run 42000801931）：modpost 报
+          #   ERROR: modpost: "msm_gpio_mpm_wake_set" [drivers/rsmc/rsmc_driver.ko] undefined!
+          # 这些 .ko 我们根本不装进包（包只带 Image + 随包 zram.ko），所以不该为它们把整次构建判死。
+          # 做法：make -k 容错跑完，然后硬验两个必须产物 —— Image 与 zram.ko，缺任何一个才算失败。
+          if [ -f "$GITHUB_WORKSPACE/kernel_workspace/.crossvendor_mode" ]; then
+            echo "[跨厂] 用 make -k 跑，坏掉的 vendor 模块不拦出包（但 Image 与 zram.ko 必须齐）"
+            rc=0
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory || rc=$?
+            echo "[跨厂] make 退出码 $rc"
+            [ -f out/arch/arm64/boot/Image ] || { echo "::error::make -k 后没有 out/arch/arm64/boot/Image（退出码 $rc）"; exit 1; }
+            echo "✅ Image: $(stat -c %s out/arch/arm64/boot/Image) 字节"
+            find out -name 'zram.ko' | grep -q . || { echo "::error::没编出 zram.ko，随包模块做不出来"; exit 1; }
+            find out -name 'zram.ko' -printf '  zram.ko → %p (%s 字节)\n' | head -2
+            [ "$rc" = "0" ] || echo "CROSSVENDOR_PARTIAL: $rc（部分 vendor 模块没链接成功，已记录，不影响包内产物）"
+          else
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
+          fi
           ccache -s
 
       - name: Fallback to Build Kernel
