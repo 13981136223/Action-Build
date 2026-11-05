@@ -2229,6 +2229,24 @@ jobs:
               fi
             done
             make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
+            # 小米 chenfeng（Xiaomi Civi 4 Pro，6.1.57）发布的 zram_drv.c 少了 zram_devops 的前置声明
+            # （同厂 uke/warsaw/yupei 的这棵树都有这行），reset_bdev() 在 432 行就引用它 →
+            # zram_drv.c:432:22: error: use of undeclared identifier 'zram_devops'，整个 drivers 树判死
+            # （run 42004693031 / 42000796741 / 41990218884 三次都炸在这一行，不是我们的补丁造成的）。
+            # 补的这行与上游一致，且只在「先引用后定义且没有前置声明」时插入，对别的树是空操作。
+            ZD=drivers/block/zram/zram_drv.c
+            if [ -f "$ZD" ] && ! grep -q '^static const struct block_device_operations zram_devops;' "$ZD"; then
+              ZUSE=$(grep -n '&zram_devops' "$ZD" | cut -d: -f1 | sort -n | sed -n '1p')
+              ZDEF=$(grep -n '^static const struct block_device_operations zram_devops = ' "$ZD" | cut -d: -f1 | sed -n '1p')
+              if [ -n "$ZUSE" ] && [ -n "$ZDEF" ] && [ "$ZUSE" -lt "$ZDEF" ]; then
+                ZINC=$(grep -n '^#include' "$ZD" | cut -d: -f1 | sort -n | tail -1)
+                awk -v n="$ZINC" 'NR==n{print; print "static const struct block_device_operations zram_devops;"; next} {print}' \
+                  "$ZD" > "$ZD.cvzfix" && mv "$ZD.cvzfix" "$ZD"
+                grep -q '^static const struct block_device_operations zram_devops;' "$ZD" \
+                  || { echo "::error::zram_devops 前置声明没插进去（$ZD 结构变了）"; exit 1; }
+                echo "[跨厂] 已补 zram_devops 前置声明（引用在第 $ZUSE 行，定义在第 $ZDEF 行）"
+              fi
+            fi
             echo "[跨厂] 第一遍 make -k（目标写死 Image + modules，不跟 all 去编 dtbs）"
             rc=0
             # 不能直接用默认的 all：它会连 dtbs 一起编，而厂商树里常夹着别家的 DTS，
