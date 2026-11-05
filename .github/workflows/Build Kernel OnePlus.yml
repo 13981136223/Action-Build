@@ -2214,15 +2214,39 @@ jobs:
           # 这些 .ko 我们根本不装进包（包只带 Image + 随包 zram.ko），所以不该为它们把整次构建判死。
           # 做法：make -k 容错跑完，然后硬验两个必须产物 —— Image 与 zram.ko，缺任何一个才算失败。
           if [ -f "$GITHUB_WORKSPACE/kernel_workspace/.crossvendor_mode" ]; then
-            echo "[跨厂] 用 make -k 跑，坏掉的 vendor 模块不拦出包（但 Image 与 zram.ko 必须齐）"
+            # 跨厂公开树里带着「依赖在没开源的另一半里」的孤儿模块，例如小米 dada（run 42004698244）：
+            #   ERROR: modpost: "msm_gpio_mpm_wake_set" [drivers/rsmc/rsmc_driver.ko] undefined!
+            # modpost 是 Image 的前置步骤，所以 -k 也救不出 Image。这类模块我们根本不装进包
+            # （原厂 .ko 在 /vendor/lib/modules，不靠我们的内核），所以自愈：把它换成空壳 Makefile
+            # 再增量编一次。第二轮还编不出 Image 才算真失败。
+            echo "[跨厂] 第一遍 make -k（坏 vendor 模块不拦出包）"
             rc=0
-            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory || rc=$?
-            echo "[跨厂] make 退出码 $rc"
-            [ -f out/arch/arm64/boot/Image ] || { echo "::error::make -k 后没有 out/arch/arm64/boot/Image（退出码 $rc）"; exit 1; }
+            make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory > /tmp/mk1.log 2>&1 || rc=$?
+            if [ ! -f out/arch/arm64/boot/Image ]; then
+              echo "[跨厂] 第一遍没出 Image（退出码 $rc），从 modpost 报错里摘孤儿模块后重编"
+              grep -oE '\[[^]]+\.ko\] undefined' /tmp/mk1.log | sed 's/^\[//; s/\.ko\] undefined$//' | xargs -r -n1 dirname | sort -u > /tmp/orphan.txt || true
+              if [ ! -s /tmp/orphan.txt ]; then
+                echo "::error::第一轮失败，但不是孤儿模块问题，日志尾部："
+                tail -25 /tmp/mk1.log
+                exit 1
+              fi
+              while read -r D; do
+                [ -n "$D" ] || continue
+                [ -d "$D" ] || { echo "  跳过（目录不在）：$D"; continue; }
+                [ -f "$D/Makefile" ] && cp "$D/Makefile" "$D/Makefile.cvsave"
+                printf '# CVSHIM stub：原模块依赖未开源的内核符号，本轮不参与构建\n' > "$D/Makefile"
+                echo "  摘掉孤儿模块：$D"
+              done < /tmp/orphan.txt
+              rc=0
+              make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" -k --no-print-directory > /tmp/mk2.log 2>&1 || rc=$?
+              [ -f out/arch/arm64/boot/Image ] || { echo "::error::摘完孤儿模块还是没有 Image（退出码 $rc），第二轮日志尾部："; tail -25 /tmp/mk2.log; exit 1; }
+            else
+              tail -6 /tmp/mk1.log
+            fi
             echo "✅ Image: $(stat -c %s out/arch/arm64/boot/Image) 字节"
             find out -name 'zram.ko' | grep -q . || { echo "::error::没编出 zram.ko，随包模块做不出来"; exit 1; }
             find out -name 'zram.ko' -printf '  zram.ko → %p (%s 字节)\n' | head -2
-            [ "$rc" = "0" ] || echo "CROSSVENDOR_PARTIAL: $rc（部分 vendor 模块没链接成功，已记录，不影响包内产物）"
+            [ "$rc" = "0" ] || echo "CROSSVENDOR_PARTIAL: 退出码 $rc（仍有模块没链接成功，包内产物已硬验）"
           else
             make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
           fi
