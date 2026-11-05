@@ -2049,15 +2049,36 @@ jobs:
               export BINDGEN="$BINDGEN_BIN"
               echo "✅ bindgen exists: $BINDGEN_BIN"
             else
-              echo "⚠️ prebuilts bindgen 未找到，fallback 到 cargo 安装 bindgen 0.69.5"
-              echo "::group::Install bindgen via cargo"
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-              source "$HOME/.cargo/env"
-              cargo install bindgen-cli --version 0.69.5
-              echo "::endgroup::"
-              BINDGEN_BIN=$(which bindgen)
-              export BINDGEN="$BINDGEN_BIN"
-              echo "✅ BINDGEN_BIN (cargo): $BINDGEN_BIN"
+              # 跨厂摊平树没有 AOSP prebuilts，原来这条路是 rustup + cargo install bindgen-cli，
+              # 现场编译 bindgen 要 15-30 分钟（实测 cv_* 的 6.12/带 Rust 的树单轮 90-120 分钟，
+              # 而同期不带 Rust 的树 19-33 分钟就结束）。先抓官方预编译 bindgen，抓不到才退回 cargo。
+              echo "⚠️ prebuilts bindgen 未找到，先试 rust-bindgen 官方预编译包"
+              BG_DONE=0
+              BG_VER="${BINDGEN_VERSION:-0.69.5}"
+              if curl -fSL --retry 2 --max-time 300 \
+                   "https://github.com/rust-lang/rust-bindgen/releases/download/${BG_VER}/rust-bindgen-${BG_VER}-x86_64-unknown-linux-gnu.tar.gz" \
+                   -o /tmp/bindgen.tgz 2>/dev/null; then
+                mkdir -p /tmp/bindgen_x && tar -xzf /tmp/bindgen.tgz -C /tmp/bindgen_x || true
+                BG_BIN=$(find /tmp/bindgen_x -type f -name 'rust-bindgen' | head -1)
+                if [ -n "$BG_BIN" ]; then
+                  ln -sf "$BG_BIN" /usr/local/bin/bindgen || { sudo ln -sf "$BG_BIN" /usr/local/bin/bindgen; }
+                  BINDGEN_BIN="$(readlink -f /usr/local/bin/bindgen)"
+                  export BINDGEN="$BINDGEN_BIN"
+                  BG_DONE=1
+                  echo "✅ BINDGEN_BIN (预编译 $BG_VER): $BINDGEN_BIN"
+                fi
+              fi
+              if [ "$BG_DONE" != "1" ]; then
+                echo "预编译 bindgen 没拿到，fallback 到 cargo 安装 bindgen $BG_VER（慢）"
+                echo "::group::Install bindgen via cargo"
+                curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+                source "$HOME/.cargo/env"
+                cargo install bindgen-cli --version "$BG_VER"
+                echo "::endgroup::"
+                BINDGEN_BIN=$(which bindgen)
+                export BINDGEN="$BINDGEN_BIN"
+                echo "✅ BINDGEN_BIN (cargo): $BINDGEN_BIN"
+              fi
             fi
           fi
 
