@@ -2671,7 +2671,7 @@ jobs:
           if [ -n "$SOC_PAT" ]; then
             echo '  case "$SOC" in '"$SOC_PAT"') : ;; *) [ -z "$BAD" ] && BAD="SoC 与构建目标('"$CPU"')不符" ;; esac' >> "$G"
           fi
-          echo '  case "$AND" in '"$AND_PAT"') : ;; *) [ -z "$BAD" ] && BAD="安卓版本与构建目标('"$ANDROID_SHORT_VERSION"')不符" ;; esac' >> "$G"
+          echo '  case "$AND" in '"$AND_PAT"') : ;; *) ui_print "⚠ 本机安卓 [$AND] 与本内核构建基线(android'"$ANDROID_SHORT_VERSION"')不同，仅提示；KMI 与 SoC 才是硬拦" ;; esac' >> "$G"
           echo 'fi' >> "$G"
           echo 'if [ -n "$BAD" ]; then' >> "$G"
           echo '  ui_print "设备检查未通过: $BAD"' >> "$G"
